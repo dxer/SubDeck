@@ -1,0 +1,21 @@
+# Build outputs & runtime data
+/subdeck
+/subdeck.exe
+/sublite
+/sublite.exe
+/data/
+/config.yaml
+*.db
+*.db-wal
+*.db-shm
+*.db.bak
+*.db.restore.tmp
+
+# Frontend dependencies & build artifacts
+/frontend/node_modules/
+/frontend/dist/
+
+# Environment & IDE files
+.env
+.DS_Store
+Thumbs.db

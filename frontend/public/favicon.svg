@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none">
+  <defs>
+    <linearGradient id="sd-bg" x1="6" y1="4" x2="42" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="44" height="44" rx="12" fill="url(#sd-bg)"/>
+  <rect x="2.5" y="2.5" width="43" height="43" rx="11.5" stroke="#FFFFFF" stroke-opacity="0.18"/>
+  <!-- Top Deck: Clean Output -->
+  <rect x="11" y="11.5" width="26" height="6.5" rx="2.2" fill="#FFFFFF"/>
+  <circle cx="33.5" cy="14.75" r="1.6" fill="#10B981"/>
+  <!-- Middle Deck: Pipeline & Route Node -->
+  <rect x="11" y="20.75" width="19.5" height="6.5" rx="2.2" fill="#FFFFFF" fill-opacity="0.82"/>
+  <circle cx="34.25" cy="24" r="2.75" fill="#93C5FD"/>
+  <!-- Bottom Deck: Aggregated Sources -->
+  <rect x="11" y="30" width="26" height="6.5" rx="2.2" fill="#FFFFFF" fill-opacity="0.52"/>
+</svg>
