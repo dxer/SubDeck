@@ -57,6 +57,9 @@ curl -fsSL https://raw.githubusercontent.com/dxer/SubDeck/main/install.sh | sudo
 
 # 国内网络可选 GitHub 镜像加速
 curl -fsSL https://raw.githubusercontent.com/dxer/SubDeck/main/install.sh | sudo bash -s -- --proxy https://ghproxy.net/
+
+# 一键原地升级（自动保留 /etc/subdeck/config.yaml 与 /var/lib/subdeck 数据库）
+curl -fsSL https://raw.githubusercontent.com/dxer/SubDeck/main/install.sh | sudo bash -s -- --upgrade
 ```
 
 安装完成后配置文件位于 `/etc/subdeck/config.yaml`，修改端口或管理员账号密码后执行 `systemctl restart subdeck` 即可生效。

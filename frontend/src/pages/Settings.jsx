@@ -344,7 +344,7 @@ export default function Settings() {
               安全与访问策略
             </h3>
           </div>
-          <span className="text-[11px] font-mono text-zinc-400">SubDeck v0.1.0</span>
+          <span className="text-[11px] font-mono text-zinc-400">SubDeck v0.1.1</span>
         </div>
 
         <div className="grid sm:grid-cols-2 gap-3 text-xs">

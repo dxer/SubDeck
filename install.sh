@@ -15,6 +15,8 @@ ADMIN_PASS="${SUBDECK_ADMIN_PASS:-}"
 GH_PROXY="${GH_PROXY:-}"
 ACTION="install"
 PURGE="0"
+FORCE="0"
+TMP_DIR=""
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -27,19 +29,28 @@ log_ok()    { printf "${GREEN}[SubDeck]${NC} %s\n" "$1"; }
 log_warn()  { printf "${YELLOW}[SubDeck]${NC} %s\n" "$1"; }
 log_error() { printf "${RED}[SubDeck]${NC} %s\n" "$1" >&2; }
 
+cleanup() {
+  if [[ -n "${TMP_DIR}" && -d "${TMP_DIR}" ]]; then
+    rm -rf "${TMP_DIR}"
+  fi
+}
+trap cleanup EXIT
+
 usage() {
   cat <<EOF
-SubDeck Linux 一键安装/卸载脚本
+SubDeck Linux 一键安装/升级/卸载脚本
 
 用法:
   bash install.sh [选项]
 
 选项:
-  --port <端口>        指定监听端口 (默认: 8080)
-  --user <用户名>      指定管理员用户名 (默认: admin)
-  --pass <密码>        指定管理员密码 (留空则随机生成)
-  --version <版本>     指定安装版本 Tag，如 v1.0.0 (默认: latest)
+  --port <端口>        指定监听端口 (仅首次安装生效，默认: 8080)
+  --user <用户名>      指定管理员用户名 (仅首次安装生效，默认: admin)
+  --pass <密码>        指定管理员密码 (仅首次安装生效，留空则随机生成)
+  --version <版本>     指定安装/升级版本 Tag，如 v0.1.0 (默认: latest)
   --proxy <前缀URL>    GitHub 下载镜像前缀 (可选，如 https://ghproxy.net/)
+  --upgrade            升级到指定或最新版本（保留原配置与数据库）
+  --force              即使版本号相同也强制重新下载安装
   --uninstall          卸载 SubDeck 服务与二进制文件
   --purge              配合 --uninstall 使用，同时删除配置与数据目录
   -h, --help           显示此帮助信息
@@ -53,6 +64,8 @@ while [[ $# -gt 0 ]]; do
     --pass)      ADMIN_PASS="${2:-}"; shift 2 ;;
     --version)   VERSION="${2:-}"; shift 2 ;;
     --proxy)     GH_PROXY="${2:-}"; shift 2 ;;
+    --upgrade)   ACTION="install"; shift ;;
+    --force)     FORCE="1"; shift ;;
     --uninstall) ACTION="uninstall"; shift ;;
     --purge)     PURGE="1"; shift ;;
     -h|--help)   usage; exit 0 ;;
@@ -77,7 +90,7 @@ do_uninstall() {
       systemctl daemon-reload 2>/dev/null || true
     fi
   fi
-  rm -f "${BIN_PATH}"
+  rm -f "${BIN_PATH}" "${BIN_PATH}.bak"
 
   if [[ "${PURGE}" == "1" ]]; then
     rm -rf "${CONFIG_DIR}" "${DATA_DIR}"
@@ -107,6 +120,14 @@ detect_os() {
   if [[ "${os}" != "Linux" ]]; then
     log_error "此脚本仅支持 Linux 系统，当前系统: ${os}"
     exit 1
+  fi
+}
+
+get_installed_version() {
+  if [[ -x "${BIN_PATH}" ]]; then
+    local out
+    out="$("${BIN_PATH}" -version 2>/dev/null || true)"
+    printf '%s' "${out}" | awk '{print $2}'
   fi
 }
 
@@ -151,7 +172,13 @@ gen_random_hex() {
 }
 
 gen_random_password() {
-  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12 || echo "SubDeck$(date +%s | tail -c 5)"
+  local raw=""
+  raw="$(dd if=/dev/urandom bs=64 count=1 2>/dev/null | tr -dc 'A-Za-z0-9' || true)"
+  if [[ "${#raw}" -ge 12 ]]; then
+    printf '%s' "${raw:0:12}"
+  else
+    printf 'SubDeck%s' "$(date +%s | tail -c 6)"
+  fi
 }
 
 prompt_tty() {
@@ -222,11 +249,23 @@ do_install() {
   local arch
   arch="$(detect_arch)"
 
+  local current_version
+  current_version="$(get_installed_version || true)"
+
   if [[ -z "${VERSION}" ]]; then
     log_info "正在查询最新 Release 版本..."
     VERSION="$(fetch_latest_version)"
   fi
-  log_info "目标版本: ${VERSION} (${arch})"
+
+  if [[ -n "${current_version}" ]]; then
+    if [[ "${current_version}" == "${VERSION}" && "${FORCE}" != "1" ]]; then
+      log_ok "当前已安装最新版本 ${current_version}，无需重复安装（如需强制重装请加 --force）。"
+      exit 0
+    fi
+    log_info "检测到已安装版本 ${current_version}，准备升级至 ${VERSION} (${arch})..."
+  else
+    log_info "目标版本: ${VERSION} (${arch})"
+  fi
 
   local archive_name="subdeck-linux-${arch}.tar.gz"
   local base_url="https://github.com/${REPO}/releases/download/${VERSION}"
@@ -235,30 +274,31 @@ do_install() {
     base_url="${GH_PROXY}${base_url}"
   fi
 
-  local tmp_dir
-  tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "${tmp_dir}"' EXIT
+  TMP_DIR="$(mktemp -d)"
 
   log_info "正在下载 ${archive_name}..."
-  download_file "${base_url}/${archive_name}" "${tmp_dir}/${archive_name}"
-  if download_file "${base_url}/checksums.txt" "${tmp_dir}/checksums.txt" 2>/dev/null; then
-    verify_checksum "${tmp_dir}/${archive_name}" "${tmp_dir}/checksums.txt"
+  download_file "${base_url}/${archive_name}" "${TMP_DIR}/${archive_name}"
+  if download_file "${base_url}/checksums.txt" "${TMP_DIR}/checksums.txt" 2>/dev/null; then
+    verify_checksum "${TMP_DIR}/${archive_name}" "${TMP_DIR}/checksums.txt"
   else
     log_warn "未获取到 checksums.txt，跳过校验。"
   fi
 
-  tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}"
-  if [[ ! -f "${tmp_dir}/subdeck" ]]; then
+  tar -xzf "${TMP_DIR}/${archive_name}" -C "${TMP_DIR}"
+  if [[ ! -f "${TMP_DIR}/subdeck" ]]; then
     log_error "压缩包中未找到 subdeck 可执行文件。"
     exit 1
   fi
 
   if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet subdeck 2>/dev/null; then
-    log_info "正在停止运行中的 subdeck 服务以便升级..."
+    log_info "正在停止运行中的 subdeck 服务以便替换文件..."
     systemctl stop subdeck
   fi
 
-  install -m 0755 "${tmp_dir}/subdeck" "${BIN_PATH}"
+  if [[ -f "${BIN_PATH}" ]]; then
+    cp -f "${BIN_PATH}" "${BIN_PATH}.bak"
+  fi
+  install -m 0755 "${TMP_DIR}/subdeck" "${BIN_PATH}"
   mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
   chmod 0750 "${CONFIG_DIR}" "${DATA_DIR}"
 
@@ -306,8 +346,9 @@ EOF
     chmod 0600 "${CONFIG_FILE}"
     log_ok "已生成配置文件: ${CONFIG_FILE}"
   else
-    log_info "检测到已存在配置文件 ${CONFIG_FILE}，保留原配置。"
-    PORT="$(grep -E '^[[:space:]]*port:' "${CONFIG_FILE}" | head -n1 | awk '{print $2}' || echo "8080")"
+    log_info "检测到已存在配置文件 ${CONFIG_FILE}，保留原配置与数据库。"
+    PORT="$(grep -E '^[[:space:]]*port:' "${CONFIG_FILE}" | head -n1 | awk '{print $2}' | tr -d '"' || true)"
+    PORT="${PORT:-8080}"
   fi
 
   if command -v systemctl >/dev/null 2>&1; then
@@ -330,14 +371,20 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable subdeck >/dev/null 2>&1 || true
-    systemctl restart subdeck
-    sleep 1
-    if systemctl is-active --quiet subdeck; then
-      log_ok "SubDeck 服务已启动并设置开机自启！"
+    if systemctl restart subdeck; then
+      sleep 1
+      if systemctl is-active --quiet subdeck; then
+        rm -f "${BIN_PATH}.bak"
+        log_ok "SubDeck 服务已启动并设置开机自启！"
+      else
+        log_warn "服务启动异常，请查看日志: journalctl -u subdeck -n 50 --no-pager"
+      fi
     else
-      log_warn "服务启动异常，请查看日志: journalctl -u subdeck -n 50 --no-pager"
+      log_error "服务启动失败，请查看日志: journalctl -u subdeck -n 50 --no-pager"
+      exit 1
     fi
   else
+    rm -f "${BIN_PATH}.bak"
     log_warn "当前环境未检测到 systemd，请手动运行: ${BIN_PATH} -config ${CONFIG_FILE}"
   fi
 
@@ -345,9 +392,13 @@ EOF
   ip="$(get_public_ip)"
   echo ""
   echo "====================================================="
-  echo "  SubDeck 安装完成 (${VERSION})"
+  if [[ -n "${current_version}" ]]; then
+    echo "  SubDeck 升级完成 (${current_version} -> ${VERSION})"
+  else
+    echo "  SubDeck 安装完成 (${VERSION})"
+  fi
   echo "====================================================="
-  echo "  访问地址 : http://${ip}:${PORT:-8080}"
+  echo "  访问地址 : http://${ip}:${PORT}"
   echo "  配置文件 : ${CONFIG_FILE}"
   echo "  数据目录 : ${DATA_DIR}"
   if [[ "${fresh_config}" == "1" ]]; then
@@ -359,7 +410,8 @@ EOF
   echo "    查看状态 : systemctl status subdeck"
   echo "    重启生效 : systemctl restart subdeck"
   echo "    查看日志 : journalctl -u subdeck -f"
-  echo "    卸载服务 : bash install.sh --uninstall"
+  echo "    一键升级 : curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s -- --upgrade"
+  echo "    卸载服务 : curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s -- --uninstall"
   echo "====================================================="
 }
 
