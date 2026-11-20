@@ -17,7 +17,7 @@ import { Toast, useToast } from '../components/Toast'
 import ConfirmDialog from '../components/ConfirmDialog'
 import NodesModal from '../components/NodesModal'
 import { CardGridSkeleton } from '../components/Skeleton'
-import { formatUserInfo } from '../utils/subUrl'
+import { formatUserInfo, copyToClipboard } from '../utils/subUrl'
 
 export default function Subscriptions() {
   const [subscriptions, setSubscriptions] = useState([])
@@ -53,10 +53,10 @@ export default function Subscriptions() {
   const [deleting, setDeleting] = useState(false)
 
   const copyText = async (text, msg) => {
-    try {
-      await navigator.clipboard.writeText(text)
+    const ok = await copyToClipboard(text)
+    if (ok) {
       showToast(msg || '已复制到剪贴板！')
-    } catch {
+    } else {
       showToast('复制失败，请手动长按复制', 'error')
     }
   }

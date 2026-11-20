@@ -211,14 +211,37 @@ var landingPageTmpl = template.Must(template.New("landing").Parse(`<!DOCTYPE htm
   <div class="toast" id="toast">已复制到剪贴板！</div>
 
   <script>
+    function showCopyToast() {
+      var toast = document.getElementById('toast');
+      toast.classList.add('show');
+      setTimeout(function () { toast.classList.remove('show'); }, 2000);
+    }
+    function fallbackCopy(text) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      return ok;
+    }
     document.querySelectorAll('.copy-btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var text = btn.getAttribute('data-copy') || '';
-        navigator.clipboard.writeText(text).then(function () {
-          var toast = document.getElementById('toast');
-          toast.classList.add('show');
-          setTimeout(function () { toast.classList.remove('show'); }, 2000);
-        });
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(text).then(showCopyToast).catch(function () {
+            if (fallbackCopy(text)) showCopyToast();
+          });
+        } else if (fallbackCopy(text)) {
+          showCopyToast();
+        }
       });
     });
   </script>

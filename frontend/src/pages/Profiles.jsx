@@ -20,7 +20,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import QrModal from '../components/QrModal'
 import NodesModal from '../components/NodesModal'
 import { RowListSkeleton } from '../components/Skeleton'
-import { getUniversalUrl, getExportUrl } from '../utils/subUrl'
+import { getUniversalUrl, getExportUrl, copyToClipboard } from '../utils/subUrl'
 
 const SUPPORTED_PROTOCOLS = ['ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'anytls', 'wireguard', 'snell']
 
@@ -57,14 +57,14 @@ export default function Profiles() {
   const [confirmState, setConfirmState] = useState({ open: false, type: '', profile: null, loading: false })
 
   const copyText = async (text, msg, profileId = null) => {
-    try {
-      await navigator.clipboard.writeText(text)
+    const ok = await copyToClipboard(text)
+    if (ok) {
       showToast(msg || '已复制到剪贴板！')
       if (profileId) {
         setCopiedProfileId(profileId)
         setTimeout(() => setCopiedProfileId(null), 1800)
       }
-    } catch {
+    } else {
       showToast('复制失败，请手动长按复制', 'error')
     }
   }

@@ -19,7 +19,7 @@ import { api } from '../api'
 import { Toast, useToast } from '../components/Toast'
 import QrModal from '../components/QrModal'
 import { MetricSkeleton, RowListSkeleton } from '../components/Skeleton'
-import { getUniversalUrl, getExportUrl } from '../utils/subUrl'
+import { getUniversalUrl, getExportUrl, copyToClipboard } from '../utils/subUrl'
 
 export default function Dashboard() {
   const [stats, setStats] = useState({
@@ -40,14 +40,14 @@ export default function Dashboard() {
   const [qrState, setQrState] = useState({ open: false, token: '', name: '' })
 
   const copyUrl = async (url, successMsg, profileId = null) => {
-    try {
-      await navigator.clipboard.writeText(url)
+    const ok = await copyToClipboard(url)
+    if (ok) {
       showToast(successMsg || '自适应订阅链接已复制！')
       if (profileId) {
         setCopiedProfileId(profileId)
         setTimeout(() => setCopiedProfileId(null), 1800)
       }
-    } catch {
+    } else {
       showToast('复制失败，请手动复制', 'error')
     }
   }
