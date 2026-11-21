@@ -19,3 +19,8 @@
 .env
 .DS_Store
 Thumbs.db
+
+# Agent workspace & runtime artifacts
+.zcode/
+*.log
+*.exe~

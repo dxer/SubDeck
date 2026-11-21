@@ -3,9 +3,13 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Copy } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { getUniversalUrl, getExportUrl } from '../utils/subUrl'
+import { useEscapeKey } from '../hooks/useEscapeKey'
+import { useI18n } from '../i18n'
 
 export default function QrModal({ open, token, profileName, onClose, onCopy }) {
+  const { t } = useI18n()
   const [qrFormat, setQrFormat] = useState('auto')
+  useEscapeKey(open, onClose)
 
   useEffect(() => {
     if (open) setQrFormat('auto')
@@ -36,11 +40,11 @@ export default function QrModal({ open, token, profileName, onClose, onCopy }) {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
-            className="relative z-10 w-full max-w-xs bg-white dark:bg-[#11141b] rounded-2xl shadow-2xl border border-zinc-200/80 dark:border-white/10 p-6 space-y-4 text-center"
+            className="relative z-10 w-full max-w-xs bg-white dark:bg-[#11141b] rounded-2xl shadow-2xl border border-zinc-200/80 dark:border-white/10 p-5 sm:p-6 space-y-4 text-center"
           >
             <div className="flex items-center justify-between">
               <div className="text-left min-w-0">
-                <h3 className="text-sm font-bold text-zinc-900 dark:text-white">手机扫码添加订阅</h3>
+                <h3 className="text-sm font-bold text-zinc-900 dark:text-white">{t('qrModal.title')}</h3>
                 <p className="text-[11px] text-zinc-400 truncate max-w-[200px]">{profileName}</p>
               </div>
               <button
@@ -64,7 +68,7 @@ export default function QrModal({ open, token, profileName, onClose, onCopy }) {
                       : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'
                   }`}
                 >
-                  {fmt === 'auto' ? '自适应' : fmt.toUpperCase()}
+                  {fmt === 'auto' ? t('qrModal.auto') : fmt.toUpperCase()}
                 </button>
               ))}
             </div>
@@ -76,14 +80,14 @@ export default function QrModal({ open, token, profileName, onClose, onCopy }) {
             <div className="space-y-2">
               <button
                 type="button"
-                onClick={() => onCopy(currentQrUrl, '当前格式订阅链接已复制！')}
+                onClick={() => onCopy(currentQrUrl, t('qrModal.copiedToast'))}
                 className="w-full hero-btn-flat py-2 px-3 text-xs gap-1.5"
               >
                 <Copy className="w-3.5 h-3.5" />
-                <span>复制当前二维码链接</span>
+                <span>{t('qrModal.copyUrl')}</span>
               </button>
               <p className="text-[11px] text-zinc-400 leading-relaxed">
-                Shadowrocket / Clash Verge / Sing-box 相机直接扫码
+                {t('qrModal.hint')}
               </p>
             </div>
           </motion.div>

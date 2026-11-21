@@ -26,6 +26,15 @@ func applyClashTransport(m map[string]interface{}, n *models.Node) {
 	}
 }
 
+// clashUDPEnabled resolves the Clash udp relay flag: the profile-level override
+// wins when present, otherwise the legacy default (enabled) applies.
+func clashUDPEnabled(n *models.Node) bool {
+	if n != nil && n.UDP != nil {
+		return *n.UDP
+	}
+	return true
+}
+
 // NodeToClashProxy converts our internal Node into Clash Meta / Mihomo compatible map
 func NodeToClashProxy(n *models.Node) map[string]interface{} {
 	if n == nil {
@@ -42,6 +51,7 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 		m["type"] = "ss"
 		m["cipher"] = n.Cipher
 		m["password"] = n.Password
+		m["udp"] = clashUDPEnabled(n)
 
 	case models.TypeVMess:
 		m["type"] = "vmess"
@@ -51,6 +61,7 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 		if n.Cipher == "" {
 			m["cipher"] = "auto"
 		}
+		m["udp"] = clashUDPEnabled(n)
 		m["network"] = n.Network
 		if n.TLS {
 			m["tls"] = true
@@ -59,6 +70,9 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 			}
 			if n.Insecure {
 				m["skip-cert-verify"] = true
+			}
+			if len(n.ALPN) > 0 {
+				m["alpn"] = n.ALPN
 			}
 		}
 		if n.Fingerprint != "" {
@@ -69,6 +83,7 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 	case models.TypeVLESS:
 		m["type"] = "vless"
 		m["uuid"] = n.UUID
+		m["udp"] = clashUDPEnabled(n)
 		m["network"] = n.Network
 		if n.Flow != "" {
 			m["flow"] = n.Flow
@@ -80,6 +95,9 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 			}
 			if n.Insecure {
 				m["skip-cert-verify"] = true
+			}
+			if len(n.ALPN) > 0 {
+				m["alpn"] = n.ALPN
 			}
 		}
 		if n.Fingerprint != "" {
@@ -97,6 +115,7 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 	case models.TypeTrojan:
 		m["type"] = "trojan"
 		m["password"] = n.Password
+		m["udp"] = clashUDPEnabled(n)
 		if n.SNI != "" {
 			m["sni"] = n.SNI
 		}
@@ -105,6 +124,9 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 		}
 		if n.Insecure {
 			m["skip-cert-verify"] = true
+		}
+		if len(n.ALPN) > 0 {
+			m["alpn"] = n.ALPN
 		}
 		applyClashTransport(m, n)
 
@@ -117,6 +139,9 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 		if n.Insecure {
 			m["skip-cert-verify"] = true
 		}
+		if len(n.ALPN) > 0 {
+			m["alpn"] = n.ALPN
+		}
 		if n.Hy2Ports != "" {
 			m["ports"] = n.Hy2Ports
 		}
@@ -126,7 +151,7 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 		if n.Hy2DownMbps > 0 {
 			m["down"] = fmt.Sprintf("%d Mbps", n.Hy2DownMbps)
 		}
-		if n.Hy2Obfs != "" {
+		if n.Hy2ObfsEnabled() {
 			m["obfs"] = n.Hy2Obfs
 			m["obfs-password"] = n.Hy2ObfsPassword
 		}
@@ -134,6 +159,7 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 	case models.TypeAnyTLS:
 		m["type"] = "anytls"
 		m["password"] = n.Password
+		m["udp"] = clashUDPEnabled(n)
 		if n.SNI != "" {
 			m["sni"] = n.SNI
 		}
@@ -151,11 +177,15 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 		m["type"] = "tuic"
 		m["uuid"] = n.UUID
 		m["password"] = n.Password
+		m["udp"] = clashUDPEnabled(n)
 		if n.SNI != "" {
 			m["sni"] = n.SNI
 		}
 		if n.Insecure {
 			m["skip-cert-verify"] = true
+		}
+		if len(n.ALPN) > 0 {
+			m["alpn"] = n.ALPN
 		}
 		if n.TuicCongestion != "" {
 			m["congestion-controller"] = n.TuicCongestion
@@ -166,6 +196,7 @@ func NodeToClashProxy(n *models.Node) map[string]interface{} {
 		m["private-key"] = n.WGPrivateKey
 		m["public-key"] = n.WGPublicKey
 		m["ip"] = n.WGLocalAddr
+		m["udp"] = clashUDPEnabled(n)
 		if n.WGMTU > 0 {
 			m["mtu"] = n.WGMTU
 		}
@@ -204,6 +235,54 @@ func GenerateClashProxiesYAML(nodes []*models.Node) ([]byte, error) {
 
 // GenerateClashFullYAML outputs a complete ready-to-run Clash / Mihomo configuration
 func GenerateClashFullYAML(nodes []*models.Node, profileName string) ([]byte, error) {
+	return GenerateClashFullYAMLWithConfig(nodes, profileName, ExportOptions{})
+}
+
+// GenerateClashFullYAMLWithOptions outputs a complete Clash / Mihomo configuration
+// with DNS defaults and optional auto-generated regional url-test groups.
+func GenerateClashFullYAMLWithOptions(nodes []*models.Node, profileName string, regionGroups bool) ([]byte, error) {
+	return GenerateClashFullYAMLWithConfig(nodes, profileName, ExportOptions{RegionGroups: regionGroups})
+}
+
+func buildClashServiceGroup(groupName string, regionGroupNames, proxyNames []string) map[string]interface{} {
+	choices := make([]string, 0, 3+len(regionGroupNames)+len(proxyNames))
+	choices = append(choices, "🚀 节点选择", "⚡ 自动选择")
+	choices = append(choices, regionGroupNames...)
+	choices = append(choices, proxyNames...)
+	return map[string]interface{}{
+		"name":    groupName,
+		"type":    "select",
+		"proxies": choices,
+	}
+}
+
+func buildClashRules(preset string) []string {
+	var rules []string
+	if preset == RulePresetAIStreaming {
+		for _, d := range aiDomainSuffixes {
+			rules = append(rules, fmt.Sprintf("DOMAIN-SUFFIX,%s,🤖 AI 服务", d))
+		}
+		for _, d := range streamingDomainSuffixes {
+			rules = append(rules, fmt.Sprintf("DOMAIN-SUFFIX,%s,🎬 流媒体", d))
+		}
+		for _, d := range telegramDomainSuffixes {
+			rules = append(rules, fmt.Sprintf("DOMAIN-SUFFIX,%s,💬 电报消息", d))
+		}
+		for _, cidr := range telegramIPCIDRs {
+			rules = append(rules, fmt.Sprintf("IP-CIDR,%s,💬 电报消息,no-resolve", cidr))
+		}
+	}
+	rules = append(rules, "GEOIP,LAN,DIRECT,no-resolve")
+	if preset != RulePresetGlobal {
+		rules = append(rules, "GEOIP,CN,DIRECT")
+	}
+	rules = append(rules, "MATCH,🚀 节点选择")
+	return rules
+}
+
+// GenerateClashFullYAMLWithConfig outputs a complete Clash / Mihomo configuration
+// with DNS defaults, optional regional url-test groups, and rule presets.
+func GenerateClashFullYAMLWithConfig(nodes []*models.Node, profileName string, opts ExportOptions) ([]byte, error) {
 	var proxies []map[string]interface{}
 	var proxyNames []string
 
@@ -235,12 +314,44 @@ func GenerateClashFullYAML(nodes []*models.Node, profileName string) ([]byte, er
 		"proxies":  proxyNames,
 	}
 
-	selectList := append([]string{"⚡ 自动选择", "🛡️ 故障转移", "DIRECT"}, proxyNames...)
+	selectList := []string{"⚡ 自动选择", "🛡️ 故障转移"}
+	var extraGroups []map[string]interface{}
+	var regionGroupNames []string
+	if opts.RegionGroups {
+		for _, rg := range BuildRegionGroups(proxyNames) {
+			selectList = append(selectList, rg.Name)
+			regionGroupNames = append(regionGroupNames, rg.Name)
+			extraGroups = append(extraGroups, map[string]interface{}{
+				"name":     rg.Name,
+				"type":     "url-test",
+				"url":      "http://www.gstatic.com/generate_204",
+				"interval": 300,
+				"proxies":  rg.Nodes,
+			})
+		}
+	}
+	selectList = append(selectList, "DIRECT")
+	selectList = append(selectList, proxyNames...)
+
 	proxyGroupProxy := map[string]interface{}{
 		"name":    "🚀 节点选择",
 		"type":    "select",
 		"proxies": selectList,
 	}
+
+	preset := NormalizeRulePreset(opts.RulePreset)
+	groups := []map[string]interface{}{
+		proxyGroupProxy,
+	}
+	if preset == RulePresetAIStreaming {
+		groups = append(groups,
+			buildClashServiceGroup("🤖 AI 服务", regionGroupNames, proxyNames),
+			buildClashServiceGroup("🎬 流媒体", regionGroupNames, proxyNames),
+			buildClashServiceGroup("💬 电报消息", regionGroupNames, proxyNames),
+		)
+	}
+	groups = append(groups, proxyGroupAuto, proxyGroupFallback)
+	groups = append(groups, extraGroups...)
 
 	config := map[string]interface{}{
 		"mixed-port":          7890,
@@ -248,17 +359,37 @@ func GenerateClashFullYAML(nodes []*models.Node, profileName string) ([]byte, er
 		"mode":                "rule",
 		"log-level":           "info",
 		"external-controller": "127.0.0.1:9090",
-		"proxies":             proxies,
-		"proxy-groups": []map[string]interface{}{
-			proxyGroupProxy,
-			proxyGroupAuto,
-			proxyGroupFallback,
+		"dns": map[string]interface{}{
+			"enable":        true,
+			"ipv6":          false,
+			"enhanced-mode": "fake-ip",
+			"fake-ip-range": "198.18.0.1/16",
+			"default-nameserver": []string{
+				"223.5.5.5",
+				"119.29.29.29",
+			},
+			"nameserver": []string{
+				"https://dns.alidns.com/dns-query",
+				"https://doh.pub/dns-query",
+			},
+			"fallback": []string{
+				"https://1.1.1.1/dns-query",
+				"https://dns.google/dns-query",
+			},
+			"fallback-filter": map[string]interface{}{
+				"geoip":      true,
+				"geoip-code": "CN",
+			},
 		},
-		"rules": []string{
-			"GEOIP,LAN,DIRECT,no-resolve",
-			"GEOIP,CN,DIRECT",
-			"MATCH,🚀 节点选择",
-		},
+		"proxies":      proxies,
+		"proxy-groups": groups,
+		"rules":        buildClashRules(preset),
+	}
+
+	if opts.ClashTemplate != nil {
+		if err := ApplyClashTemplate(config, opts.ClashTemplate); err != nil {
+			return nil, err
+		}
 	}
 
 	out, err := yaml.Marshal(config)

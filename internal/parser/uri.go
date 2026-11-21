@@ -431,6 +431,32 @@ func parseTrojan(raw string) (*models.Node, error) {
 	return node, nil
 }
 
+// resolveTLSSNI picks the SNI from common URI params: `sni`, then `peer`
+// (NekoBox-style TLS peer name), then the connect host as last resort.
+func resolveTLSSNI(q url.Values, host string) string {
+	for _, key := range []string{"sni", "peer"} {
+		if v := strings.TrimSpace(q.Get(key)); v != "" {
+			return v
+		}
+	}
+	return host
+}
+
+// certPinPresent reports whether the link pins the server certificate (hpkp / pinSHA256).
+// Neither mihomo nor sing-box can verify pins, so skip-cert-verify is the only working conversion.
+func certPinPresent(q url.Values) bool {
+	return strings.TrimSpace(q.Get("hpkp")) != "" || strings.TrimSpace(q.Get("pinSHA256")) != ""
+}
+
+func firstPositiveInt(vals ...string) int {
+	for _, v := range vals {
+		if n, _ := strconv.Atoi(strings.TrimSpace(v)); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 // Hysteria2: hysteria2://password@host:port?sni=...&insecure=...&obfs=...&obfs-password=...#name
 func parseHysteria2(raw string) (*models.Node, error) {
 	u, err := url.Parse(raw)
@@ -442,13 +468,17 @@ func parseHysteria2(raw string) (*models.Node, error) {
 	name := parseFragmentName(u, u.Host)
 
 	q := u.Query()
-	sni := q.Get("sni")
-	if sni == "" {
-		sni = u.Hostname()
+	sni := resolveTLSSNI(q, u.Hostname())
+
+	// `obfs=none` explicitly means "no obfs"; normalize away so generators never emit it
+	obfs := q.Get("obfs")
+	if strings.EqualFold(obfs, "none") {
+		obfs = ""
 	}
 
-	up, _ := strconv.Atoi(q.Get("up"))
-	down, _ := strconv.Atoi(q.Get("down"))
+	// Official URI scheme uses upmbps/downmbps; some providers use up/down
+	up := firstPositiveInt(q.Get("upmbps"), q.Get("up"))
+	down := firstPositiveInt(q.Get("downmbps"), q.Get("down"))
 
 	alpnList := []string{"h3"}
 	if alpn := q.Get("alpn"); alpn != "" {
@@ -463,11 +493,11 @@ func parseHysteria2(raw string) (*models.Node, error) {
 		Password:        safeUsername(u),
 		TLS:             true,
 		SNI:             sni,
-		Insecure:        q.Get("insecure") == "1" || q.Get("allowInsecure") == "1",
+		Insecure:        q.Get("insecure") == "1" || q.Get("allowInsecure") == "1" || certPinPresent(q),
 		ALPN:            alpnList,
 		Hy2UpMbps:       up,
 		Hy2DownMbps:     down,
-		Hy2Obfs:         q.Get("obfs"),
+		Hy2Obfs:         obfs,
 		Hy2ObfsPassword: q.Get("obfs-password"),
 		Hy2Ports:        q.Get("mport"),
 	}, nil
@@ -497,9 +527,9 @@ func parseTUIC(raw string) (*models.Node, error) {
 		UUID:           safeUsername(u),
 		Password:       safePassword(u),
 		TLS:            true,
-		SNI:            q.Get("sni"),
+		SNI:            resolveTLSSNI(q, u.Hostname()),
 		ALPN:           alpnList,
-		Insecure:       q.Get("allow_insecure") == "1" || q.Get("insecure") == "1",
+		Insecure:       q.Get("allow_insecure") == "1" || q.Get("insecure") == "1" || certPinPresent(q),
 		TuicCongestion: q.Get("congestion_control"),
 		TuicUDPDrastic: q.Get("udp_relay_mode") == "quic",
 		TuicZeroRTT:    q.Get("zero_rtt_handshake") == "1",
@@ -591,10 +621,6 @@ func parseAnyTLS(raw string) (*models.Node, error) {
 	name := parseFragmentName(u, u.Host)
 
 	q := u.Query()
-	sni := q.Get("sni")
-	if sni == "" {
-		sni = u.Hostname()
-	}
 
 	var alpnList []string
 	if alpn := q.Get("alpn"); alpn != "" {
@@ -608,9 +634,9 @@ func parseAnyTLS(raw string) (*models.Node, error) {
 		Port:        port,
 		Password:    safeUsername(u),
 		TLS:         true,
-		SNI:         sni,
+		SNI:         resolveTLSSNI(q, u.Hostname()),
 		Fingerprint: q.Get("fp"),
-		Insecure:    q.Get("insecure") == "1" || q.Get("allowInsecure") == "1",
+		Insecure:    q.Get("insecure") == "1" || q.Get("allowInsecure") == "1" || certPinPresent(q),
 		ALPN:        alpnList,
 	}, nil
 }

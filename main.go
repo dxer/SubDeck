@@ -57,8 +57,8 @@ func setupRouter(db *database.DB, fetcher *services.FetcherService, distSub fs.F
 	authH := handlers.NewAuthHandler(db)
 	dashH := handlers.NewDashboardHandler(db)
 	subH := handlers.NewSubscriptionHandler(db, fetcher)
-	profH := handlers.NewProfileHandler(db)
-	exportH := handlers.NewExportHandler(db)
+	profH := handlers.NewProfileHandler(db, fetcher)
+	exportH := handlers.NewExportHandler(db, fetcher)
 	sysH := handlers.NewSystemHandler(db)
 
 	// Public Routes
@@ -72,12 +72,16 @@ func setupRouter(db *database.DB, fetcher *services.FetcherService, distSub fs.F
 	{
 		api.GET("/auth/me", authH.Me)
 		api.POST("/auth/password", authH.UpdatePassword)
+		api.POST("/auth/logout-all", authH.LogoutAll)
 
 		api.GET("/dashboard/stats", dashH.GetStats)
 
-		// System Backup & Restore
+		// System Backup, Restore & Settings
 		api.GET("/system/backup", sysH.DownloadBackup)
 		api.POST("/system/restore", sysH.RestoreBackup)
+		api.GET("/system/settings", sysH.GetSettings)
+		api.PUT("/system/settings", sysH.UpdateSettings)
+		api.POST("/system/webhook-test", sysH.TestWebhook)
 
 		// Subscriptions (both Remote and Local)
 		api.GET("/subscriptions", subH.List)
@@ -85,14 +89,18 @@ func setupRouter(db *database.DB, fetcher *services.FetcherService, distSub fs.F
 		api.PUT("/subscriptions/:id", subH.Update)
 		api.DELETE("/subscriptions/:id", subH.Delete)
 		api.POST("/subscriptions/:id/refresh", subH.Refresh)
+		api.POST("/subscriptions/:id/probe", subH.Probe)
 		api.GET("/subscriptions/:id/nodes", subH.GetNodes)
 
 		// Profiles (Combinations)
 		api.GET("/profiles", profH.List)
 		api.POST("/profiles", profH.Create)
+		api.POST("/profiles/preview", profH.PreviewDraft)
 		api.PUT("/profiles/:id", profH.Update)
 		api.DELETE("/profiles/:id", profH.Delete)
 		api.POST("/profiles/:id/reset-token", profH.ResetToken)
+		api.POST("/profiles/:id/refresh-templates", profH.RefreshTemplates)
+		api.POST("/profiles/:id/probe", profH.Probe)
 		api.GET("/profiles/:id/preview", profH.Preview)
 	}
 
@@ -206,6 +214,7 @@ func main() {
 		}
 	}
 	auth.SetJWTSecret(jwtSecret)
+	auth.SetTokenVersion(db.GetTokenVersion())
 
 	// 3. Initialize Fetcher & Background Scheduler
 	fetcher := services.NewFetcherService(db)

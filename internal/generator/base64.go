@@ -45,6 +45,9 @@ func NodeToURI(n *models.Node) string {
 			v["tls"] = "tls"
 			v["sni"] = n.SNI
 		}
+		if len(n.ALPN) > 0 {
+			v["alpn"] = strings.Join(n.ALPN, ",")
+		}
 		if n.Fingerprint != "" {
 			v["fp"] = n.Fingerprint
 		}
@@ -83,6 +86,9 @@ func NodeToURI(n *models.Node) string {
 		if n.Insecure {
 			q.Set("allowInsecure", "1")
 		}
+		if len(n.ALPN) > 0 {
+			q.Set("alpn", strings.Join(n.ALPN, ","))
+		}
 		if n.Fingerprint != "" {
 			q.Set("fp", n.Fingerprint)
 		}
@@ -111,6 +117,9 @@ func NodeToURI(n *models.Node) string {
 		if n.Fingerprint != "" {
 			q.Set("fp", n.Fingerprint)
 		}
+		if len(n.ALPN) > 0 {
+			q.Set("alpn", strings.Join(n.ALPN, ","))
+		}
 		if n.WSOptions != nil {
 			q.Set("path", n.WSOptions.Path)
 			if host, ok := n.WSOptions.Headers["Host"]; ok {
@@ -130,7 +139,16 @@ func NodeToURI(n *models.Node) string {
 		if n.Insecure {
 			q.Set("insecure", "1")
 		}
-		if n.Hy2Obfs != "" {
+		if len(n.ALPN) > 0 {
+			q.Set("alpn", strings.Join(n.ALPN, ","))
+		}
+		if n.Hy2UpMbps > 0 {
+			q.Set("upmbps", strconv.Itoa(n.Hy2UpMbps))
+		}
+		if n.Hy2DownMbps > 0 {
+			q.Set("downmbps", strconv.Itoa(n.Hy2DownMbps))
+		}
+		if n.Hy2ObfsEnabled() {
 			q.Set("obfs", n.Hy2Obfs)
 			q.Set("obfs-password", n.Hy2ObfsPassword)
 		}
@@ -146,6 +164,9 @@ func NodeToURI(n *models.Node) string {
 		}
 		if n.Fingerprint != "" {
 			q.Set("fp", n.Fingerprint)
+		}
+		if len(n.ALPN) > 0 {
+			q.Set("alpn", strings.Join(n.ALPN, ","))
 		}
 		if n.Insecure {
 			q.Set("insecure", "1")
@@ -165,6 +186,9 @@ func NodeToURI(n *models.Node) string {
 		}
 		if n.TuicCongestion != "" {
 			q.Set("congestion_control", n.TuicCongestion)
+		}
+		if len(n.ALPN) > 0 {
+			q.Set("alpn", strings.Join(n.ALPN, ","))
 		}
 		return fmt.Sprintf("tuic://%s:%s@%s?%s#%s", url.PathEscape(n.UUID), url.QueryEscape(n.Password), hostPort, q.Encode(), name)
 

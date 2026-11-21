@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import {
   Rss,
   FolderDown,
@@ -10,54 +10,67 @@ import {
   Trash2,
   Copy,
   Search,
-  X
+  X,
+  LayoutGrid,
+  List as ListIcon,
+  Upload
 } from 'lucide-react'
 import { api } from '../api'
+import { useI18n } from '../i18n'
 import { Toast, useToast } from '../components/Toast'
 import ConfirmDialog from '../components/ConfirmDialog'
 import NodesModal from '../components/NodesModal'
+import Drawer from '../components/Drawer'
 import { CardGridSkeleton } from '../components/Skeleton'
 import { formatUserInfo, copyToClipboard } from '../utils/subUrl'
 
 export default function Subscriptions() {
+  const { t, lang } = useI18n()
   const [subscriptions, setSubscriptions] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [refreshingId, setRefreshingId] = useState('')
-  const [isRefreshingAll, setIsRefreshingAll] = useState(false)
+  const [refreshProgress, setRefreshProgress] = useState(null)
   const { toast, showToast } = useToast()
 
   const [currentTab, setCurrentTab] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [viewMode, setViewMode] = useState(() => localStorage.getItem('subdeck_sub_view') || 'grid')
 
-  // Add/Edit Modal
-  const [showModal, setShowModal] = useState(false)
+  const [showDrawer, setShowDrawer] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editingId, setEditingId] = useState('')
+  const [isDraggingFile, setIsDraggingFile] = useState(false)
   const [form, setForm] = useState({
     name: '',
     type: 'remote',
+    urls: '',
     url: '',
     raw_content: '',
     user_agent: 'ClashMeta/v1.18.0 (SubDeck)',
     insecure_skip_verify: false,
     auto_update: true,
-    interval_hours: 12
+    interval_hours: 12,
+    fetch_proxy_url: '',
+    failure_policy: 'strict'
   })
 
-  // Nodes inspection modal
-  const [nodesModal, setNodesModal] = useState({ open: false, title: '', nodes: [] })
-
-  // Delete confirm dialog
+  const [nodesModal, setNodesModal] = useState({ open: false, subId: '', title: '', nodes: [] })
+  const [probingModal, setProbingModal] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
+
+  const switchViewMode = (mode) => {
+    setViewMode(mode)
+    localStorage.setItem('subdeck_sub_view', mode)
+  }
 
   const copyText = async (text, msg) => {
     const ok = await copyToClipboard(text)
     if (ok) {
-      showToast(msg || '已复制到剪贴板！')
+      showToast(msg || t('common.copied'))
     } else {
-      showToast('复制失败，请手动长按复制', 'error')
+      showToast(t('common.copyFailed'), 'error')
     }
   }
 
@@ -71,28 +84,33 @@ export default function Subscriptions() {
     }
   }
 
-  const formatTime = (t) => {
-    if (!t || t.startsWith('0001')) return '未同步'
-    const date = new Date(t)
-    const now = new Date()
-    const diffSec = Math.floor((now - date) / 1000)
-    if (diffSec < 60) return '刚刚'
-    if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`
-    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`
-    return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+  const formatTime = (val) => {
+    if (!val || val.startsWith('0001')) return t('subscriptions.unsynced')
+    const date = new Date(val)
+    const diffSec = Math.floor((Date.now() - date.getTime()) / 1000)
+    if (diffSec < 60) return t('subscriptions.justNow')
+    if (diffSec < 3600) return t('subscriptions.minsAgo', { n: Math.floor(diffSec / 60) })
+    if (diffSec < 86400) return t('subscriptions.hoursAgo', { n: Math.floor(diffSec / 3600) })
+    return date.toLocaleDateString(lang === 'en' ? 'en-US' : 'zh-CN', { month: '2-digit', day: '2-digit' })
   }
 
   const remoteCount = useMemo(() => subscriptions.filter((s) => s.type === 'remote').length, [subscriptions])
   const localCount = useMemo(() => subscriptions.filter((s) => s.type === 'local').length, [subscriptions])
 
   const filteredSubscriptions = useMemo(() => {
-    return subscriptions.filter((s) => {
-      const matchTab = !currentTab || s.type === currentTab
-      const q = searchQuery.trim().toLowerCase()
-      const matchQuery =
-        !q || s.name.toLowerCase().includes(q) || (s.url && s.url.toLowerCase().includes(q))
-      return matchTab && matchQuery
-    })
+    const q = searchQuery.trim().toLowerCase()
+    return subscriptions
+      .filter((s) => {
+        const matchTab = !currentTab || s.type === currentTab
+        const urlsText = Array.isArray(s.urls) && s.urls.length > 0 ? s.urls.join(' ') : (s.url || '')
+        const matchQuery = !q || s.name.toLowerCase().includes(q) || urlsText.toLowerCase().includes(q)
+        return matchTab && matchQuery
+      })
+      .sort((a, b) => {
+        const aErr = a.status === 'error' ? 0 : 1
+        const bErr = b.status === 'error' ? 0 : 1
+        return aErr - bErr
+      })
   }, [subscriptions, currentTab, searchQuery])
 
   const localRecognizedCount = useMemo(() => {
@@ -107,7 +125,7 @@ export default function Subscriptions() {
         count++
       }
     }
-    return count > 0 ? count : lines.length > 0 ? '已输入 (Base64/多行)' : 0
+    return count > 0 ? count : lines.length
   }, [form.raw_content])
 
   const loadData = useCallback(async () => {
@@ -115,7 +133,7 @@ export default function Subscriptions() {
       const res = await api.getSubscriptions()
       setSubscriptions(Array.isArray(res) ? res : (res?.data || []))
     } catch (err) {
-      showToast(err.message || '加载订阅列表失败', 'error')
+      showToast(err.message || 'Load failed', 'error')
     } finally {
       setLoading(false)
     }
@@ -125,19 +143,23 @@ export default function Subscriptions() {
     loadData()
   }, [loadData])
 
-  const openModal = (item = null) => {
+  const openDrawer = (item = null) => {
     if (item) {
       setIsEditing(true)
       setEditingId(item.id)
+      const urls = Array.isArray(item.urls) && item.urls.length > 0 ? item.urls : (item.url ? [item.url] : [])
       setForm({
         name: item.name,
         type: item.type,
+        urls: urls.join('\n'),
         url: item.url || '',
         raw_content: item.raw_content || '',
         user_agent: item.user_agent || 'ClashMeta/v1.18.0 (SubDeck)',
         insecure_skip_verify: !!item.insecure_skip_verify,
         auto_update: item.auto_update,
-        interval_hours: item.interval_hours || 12
+        interval_hours: item.interval_hours || 12,
+        fetch_proxy_url: item.fetch_proxy_url || '',
+        failure_policy: item.failure_policy || 'strict'
       })
     } else {
       setIsEditing(false)
@@ -145,32 +167,78 @@ export default function Subscriptions() {
       setForm({
         name: '',
         type: currentTab === 'local' ? 'local' : 'remote',
+        urls: '',
         url: '',
         raw_content: '',
         user_agent: 'ClashMeta/v1.18.0 (SubDeck)',
         insecure_skip_verify: false,
         auto_update: true,
-        interval_hours: 12
+        interval_hours: 12,
+        fetch_proxy_url: '',
+        failure_policy: 'strict'
       })
     }
-    setShowModal(true)
+    setIsDraggingFile(false)
+    setShowDrawer(true)
+  }
+
+  const handleFileDrop = async (e) => {
+    e.preventDefault()
+    setIsDraggingFile(false)
+    const file = e.dataTransfer?.files?.[0]
+    if (!file) return
+    if (file.type && !file.type.startsWith('text') && !/\.(txt|ya?ml|conf|json)$/i.test(file.name)) {
+      showToast(t('subscriptions.nonTextError'), 'error')
+      return
+    }
+    try {
+      const text = await file.text()
+      setForm((f) => ({
+        ...f,
+        raw_content: f.raw_content ? `${f.raw_content.trimEnd()}\n${text.trim()}` : text.trim()
+      }))
+      showToast(t('subscriptions.fileLoaded', { name: file.name }))
+    } catch {
+      showToast(t('subscriptions.nonTextError'), 'error')
+    }
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    const urlList = (form.type === 'remote' ? form.urls : '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+    if (form.type === 'remote' && urlList.length === 0) {
+      showToast(t('subscriptions.needUrl'), 'error')
+      return
+    }
+    if (form.type === 'remote' && urlList.length > 10) {
+      showToast(t('subscriptions.tooManyUrls'), 'error')
+      return
+    }
     setSaving(true)
     try {
-      if (isEditing) {
-        await api.updateSubscription(editingId, form)
-        showToast('订阅源更新成功')
-      } else {
-        await api.createSubscription(form)
-        showToast(form.type === 'local' ? '本地订阅创建成功' : '远程订阅添加成功，后台正在抓取节点')
+      const payload = {
+        ...form,
+        urls: urlList,
+        url: urlList[0] || ''
       }
-      setShowModal(false)
+      if (isEditing) {
+        await api.updateSubscription(editingId, payload)
+        showToast(t('subscriptions.saveUpdated'))
+      } else {
+        await api.createSubscription(payload)
+        showToast(
+          form.type === 'local'
+            ? t('subscriptions.saveCreatedLocal')
+            : t('subscriptions.saveCreatedRemote')
+        )
+      }
+      setShowDrawer(false)
       await loadData()
     } catch (err) {
-      showToast(err.message || '保存失败', 'error')
+      showToast(err.message || 'Save failed', 'error')
     } finally {
       setSaving(false)
     }
@@ -180,10 +248,10 @@ export default function Subscriptions() {
     setRefreshingId(id)
     try {
       const res = await api.refreshSubscription(id)
-      showToast(`刷新成功，已拉取 ${res.node_count} 个节点`)
+      showToast(t('subscriptions.refreshOk', { count: res.node_count }))
       await loadData()
     } catch (err) {
-      showToast(err.message || '刷新失败', 'error')
+      showToast(err.message || t('subscriptions.refreshFailed'), 'error')
       await loadData()
     } finally {
       setRefreshingId('')
@@ -193,27 +261,60 @@ export default function Subscriptions() {
   const refreshAllRemote = async () => {
     const remotes = subscriptions.filter((s) => s.type === 'remote')
     if (remotes.length === 0) return
-    setIsRefreshingAll(true)
+
+    setRefreshProgress({ done: 0, total: remotes.length })
     let successCount = 0
-    for (const r of remotes) {
-      try {
-        await api.refreshSubscription(r.id)
-        successCount++
-      } catch (e) {
-        console.error(e)
+    let doneCount = 0
+    let cursor = 0
+    const concurrency = Math.min(3, remotes.length)
+
+    const worker = async () => {
+      while (cursor < remotes.length) {
+        const sub = remotes[cursor++]
+        try {
+          await api.refreshSubscription(sub.id)
+          successCount++
+        } catch (e) {
+          console.error(e)
+        } finally {
+          doneCount++
+          setRefreshProgress({ done: doneCount, total: remotes.length })
+        }
       }
     }
-    showToast(`全量拉取完成 (成功 ${successCount}/${remotes.length})`)
-    setIsRefreshingAll(false)
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()))
+    showToast(t('subscriptions.syncDoneToast', { ok: successCount, total: remotes.length }))
+    setRefreshProgress(null)
     await loadData()
   }
 
   const openNodes = async (sub) => {
     try {
       const nodes = await api.getSubscriptionNodes(sub.id)
-      setNodesModal({ open: true, title: `${sub.name} 解析节点`, nodes: nodes || [] })
+      setNodesModal({
+        open: true,
+        subId: sub.id,
+        title: t('subscriptions.modalNodesTitle', { name: sub.name }),
+        nodes: nodes || []
+      })
     } catch (err) {
-      showToast(err.message || '获取节点失败', 'error')
+      showToast(err.message || 'Load nodes failed', 'error')
+    }
+  }
+
+  const handleProbeNodes = async () => {
+    if (!nodesModal.subId) return
+    setProbingModal(true)
+    try {
+      const res = await api.probeSubscription(nodesModal.subId)
+      const updatedNodes = Array.isArray(res?.nodes) ? res.nodes : []
+      setNodesModal((prev) => ({ ...prev, nodes: updatedNodes }))
+      showToast(t('subscriptions.probeOk', { healthy: res?.healthy ?? 0, failed: res?.failed ?? 0 }))
+    } catch (err) {
+      showToast(err.message || t('subscriptions.probeFailed'), 'error')
+    } finally {
+      setProbingModal(false)
     }
   }
 
@@ -222,65 +323,74 @@ export default function Subscriptions() {
     setDeleting(true)
     try {
       await api.deleteSubscription(deleteTarget.id)
-      showToast('订阅源已删除')
+      showToast(t('subscriptions.deleted'))
       setDeleteTarget(null)
       await loadData()
     } catch (err) {
-      showToast(err.message || '删除失败', 'error')
+      showToast(err.message || 'Delete failed', 'error')
     } finally {
       setDeleting(false)
     }
   }
 
+  const subUrlCount = (sub) => (Array.isArray(sub.urls) && sub.urls.length > 0 ? sub.urls.length : (sub.url ? 1 : 0))
+
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
+    <div className="space-y-4 sm:space-y-5 max-w-7xl mx-auto">
       <Toast toast={toast} />
 
       {/* Header */}
-      <div className="hero-card flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 p-5">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-zinc-900 dark:text-white">
-            订阅源管理
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-1">
+        <div className="flex items-center gap-2.5">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-zinc-900 dark:text-white">
+            {t('subscriptions.title')}
           </h1>
           <span className="hero-chip-default text-xs font-medium tabular-nums">
-            共 <span className="font-mono font-bold text-zinc-700 dark:text-zinc-200 mx-0.5">{subscriptions.length}</span> 个源
+            {t('subscriptions.countBadge', { count: subscriptions.length })}
           </span>
         </div>
-        <div className="flex items-center gap-2.5 shrink-0">
+
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 shrink-0">
           {remoteCount > 0 && (
             <button
               onClick={refreshAllRemote}
-              disabled={isRefreshingAll}
-              className="hero-btn-bordered px-3.5 py-2 text-xs font-semibold gap-1.5 disabled:opacity-50"
+              disabled={!!refreshProgress}
+              className="hero-btn-bordered px-3.5 py-2 text-xs font-semibold gap-1.5 disabled:opacity-60 tabular-nums"
             >
               <RefreshCw
-                className={`w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA] ${isRefreshingAll ? 'animate-spin' : ''}`}
+                className={`w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA] ${refreshProgress ? 'animate-spin' : ''}`}
               />
-              <span>全量拉取更新</span>
+              <span>
+                {refreshProgress
+                  ? t('subscriptions.syncingProgress', { done: refreshProgress.done, total: refreshProgress.total })
+                  : t('subscriptions.syncAll')}
+              </span>
             </button>
           )}
           <button
-            onClick={() => openModal()}
-            className="hero-btn-primary px-4 py-2 text-xs font-semibold gap-1.5"
+            onClick={() => openDrawer()}
+            className={`hero-btn-primary px-4 py-2 text-xs font-semibold gap-1.5 ${
+              remoteCount === 0 ? 'col-span-2 sm:col-span-1' : ''
+            }`}
           >
             <Plus className="w-4 h-4" />
-            <span>添加订阅源</span>
+            <span>{t('subscriptions.addSource')}</span>
           </button>
         </div>
       </div>
 
-      {/* Filter & Search Toolbar */}
-      <div className="hero-card flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-2">
-        <div className="flex p-1 bg-zinc-100 dark:bg-white/[0.04] rounded-xl gap-1">
+      {/* Filter, Search & View Mode Toolbar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3">
+        <div className="flex p-1 bg-zinc-200/60 dark:bg-white/[0.04] rounded-xl gap-1 w-full sm:w-fit border border-zinc-200/70 dark:border-white/[0.06] overflow-x-auto">
           {[
-            { key: '', label: '全部订阅', count: subscriptions.length },
-            { key: 'remote', label: '远程订阅', count: remoteCount },
-            { key: 'local', label: '本地订阅', count: localCount }
+            { key: '', label: t('subscriptions.tabAll'), count: subscriptions.length },
+            { key: 'remote', label: t('subscriptions.tabRemote'), count: remoteCount },
+            { key: 'local', label: t('subscriptions.tabLocal'), count: localCount }
           ].map((tab) => (
             <button
               key={tab.key}
               onClick={() => setCurrentTab(tab.key)}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap ${
                 currentTab === tab.key
                   ? 'bg-white dark:bg-[#1E2330] text-zinc-900 dark:text-white shadow-xs'
                   : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
@@ -291,7 +401,7 @@ export default function Subscriptions() {
                 className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono tabular-nums ${
                   currentTab === tab.key
                     ? 'bg-[#2563EB]/12 text-[#2563EB] dark:text-[#60A5FA]'
-                    : 'bg-zinc-200/70 dark:bg-white/10 text-zinc-500'
+                    : 'bg-zinc-200/80 dark:bg-white/10 text-zinc-500'
                 }`}
               >
                 {tab.count}
@@ -300,61 +410,200 @@ export default function Subscriptions() {
           ))}
         </div>
 
-        <div className="relative w-full sm:w-72">
-          <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            type="text"
-            placeholder="搜索订阅名称或网址..."
-            className="hero-input pl-9 pr-8 py-2 text-xs text-zinc-800 dark:text-zinc-200"
-          />
-          {searchQuery && (
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="relative flex-1 sm:w-64">
+            <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              type="text"
+              placeholder={t('subscriptions.searchPlaceholder')}
+              className="hero-input pl-8 pr-8 py-2 text-sm sm:text-xs text-zinc-800 dark:text-zinc-200"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex p-1 bg-zinc-200/60 dark:bg-white/[0.04] rounded-xl border border-zinc-200/70 dark:border-white/[0.06] shrink-0">
             <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+              type="button"
+              onClick={() => switchViewMode('grid')}
+              className={`p-1.5 rounded-lg transition-all ${
+                viewMode === 'grid'
+                  ? 'bg-white dark:bg-[#1E2330] text-zinc-900 dark:text-white shadow-xs'
+                  : 'text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+              }`}
             >
-              <X className="w-3.5 h-3.5" />
+              <LayoutGrid className="w-3.5 h-3.5" />
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => switchViewMode('table')}
+              className={`p-1.5 rounded-lg transition-all ${
+                viewMode === 'table'
+                  ? 'bg-white dark:bg-[#1E2330] text-zinc-900 dark:text-white shadow-xs'
+                  : 'text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+              }`}
+            >
+              <ListIcon className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Loading / Empty / Grid */}
+      {/* Content */}
       {loading ? (
         <CardGridSkeleton count={6} />
       ) : filteredSubscriptions.length === 0 ? (
-        <div className="p-16 hero-card text-center space-y-3">
-          <div className="w-12 h-12 rounded-2xl bg-zinc-100 dark:bg-white/5 flex items-center justify-center text-zinc-400 mx-auto">
-            <Rss className="w-6 h-6" />
+        <div className="p-12 sm:p-16 hero-card text-center space-y-3">
+          <div className="w-11 h-11 rounded-2xl bg-zinc-100 dark:bg-white/5 flex items-center justify-center text-zinc-400 mx-auto">
+            <Rss className="w-5 h-5" />
           </div>
-          <div>
-            <h3 className="text-sm font-bold text-zinc-900 dark:text-white">暂无匹配的订阅源</h3>
-            <p className="text-xs text-zinc-400 max-w-sm mx-auto mt-1 leading-relaxed">
-              可随时点击下方按钮，添加机场远程订阅链接，或批量导入多行自建节点。
-            </p>
-          </div>
-          <button
-            onClick={() => openModal()}
-            className="hero-btn-primary px-4 py-2 text-xs font-semibold"
-          >
-            立即添加
+          <h3 className="text-sm font-bold text-zinc-900 dark:text-white">
+            {searchQuery ? t('subscriptions.emptySearch') : t('subscriptions.emptyTitle')}
+          </h3>
+          <button onClick={() => openDrawer()} className="hero-btn-primary px-4 py-2 text-xs font-semibold">
+            {t('subscriptions.addNow')}
           </button>
         </div>
+      ) : viewMode === 'table' ? (
+        <div className="hero-card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-zinc-100 dark:border-white/[0.06] text-[11px] font-semibold text-zinc-400 uppercase tracking-wider bg-zinc-50/70 dark:bg-white/[0.02]">
+                  <th className="py-3 px-4">{t('subscriptions.colSource')}</th>
+                  <th className="py-3 px-4 hidden md:table-cell">{t('subscriptions.colUrlTraffic')}</th>
+                  <th className="py-3 px-4">{t('subscriptions.colNodes')}</th>
+                  <th className="py-3 px-4 hidden sm:table-cell">{t('subscriptions.colStatus')}</th>
+                  <th className="py-3 px-4 text-right">{t('subscriptions.colActions')}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100 dark:divide-white/[0.06]">
+                {filteredSubscriptions.map((sub) => {
+                  const info = formatUserInfo(sub.user_info, lang)
+                  return (
+                    <tr
+                      key={sub.id}
+                      className="hover:bg-zinc-50/80 dark:hover:bg-white/[0.02] transition-colors"
+                    >
+                      <td className="py-3.5 px-4">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase shrink-0 ${
+                              sub.type === 'local'
+                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                                : 'bg-[#2563EB]/10 text-[#2563EB] dark:text-[#60A5FA] border-[#2563EB]/20'
+                            }`}
+                          >
+                            {sub.type === 'local' ? t('dashboard.local') : t('dashboard.remote')}
+                          </span>
+                          <span className="font-semibold text-zinc-900 dark:text-white truncate max-w-[140px] sm:max-w-[200px]">
+                            {sub.name}
+                          </span>
+                        </div>
+                        {sub.status === 'error' && sub.error_msg && (
+                          <div className="text-[11px] text-rose-500 mt-1 truncate max-w-[180px] sm:max-w-xs" title={sub.error_msg}>
+                            {sub.error_msg}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4 hidden md:table-cell font-mono text-[11px] text-zinc-400">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate max-w-[220px]">
+                            {sub.type === 'remote' ? maskUrl(sub.url) : t('subscriptions.localImportDesc')}
+                          </span>
+                          {sub.type === 'remote' && subUrlCount(sub) > 1 && (
+                            <span className="hero-chip-default text-[9px] font-mono shrink-0 tabular-nums">
+                              {t('subscriptions.urlCount', { count: subUrlCount(sub) })}
+                            </span>
+                          )}
+                          {sub.type === 'remote' && (
+                            <button
+                              onClick={() => copyText(sub.url, t('subscriptions.rawCopied'))}
+                              className="hover:text-zinc-700 dark:hover:text-white"
+                            >
+                              <Copy className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                        {info && <div className="text-[10px] text-zinc-500 mt-0.5">{info.trafficText}</div>}
+                      </td>
+                      <td className="py-3.5 px-4 font-mono font-bold text-zinc-900 dark:text-white tabular-nums">
+                        {sub.node_count || 0}
+                      </td>
+                      <td className="py-3.5 px-4 hidden sm:table-cell font-mono text-[11px] text-zinc-400">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              sub.status === 'error' ? 'bg-rose-500' : sub.status === 'partial' ? 'bg-amber-500' : 'bg-emerald-500'
+                            }`}
+                          />
+                          <span>{formatTime(sub.last_updated)}</span>
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="flex items-center justify-end gap-1">
+                          {sub.type === 'remote' && (
+                            <button
+                              onClick={() => handleRefresh(sub.id)}
+                              disabled={refreshingId === sub.id}
+                              title={t('subscriptions.refreshTip')}
+                              className="hero-btn-default p-1.5 rounded-lg text-zinc-400 hover:text-[#2563EB] dark:hover:text-[#60A5FA]"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${refreshingId === sub.id ? 'animate-spin' : ''}`} />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => openNodes(sub)}
+                            title={t('subscriptions.viewNodesTip')}
+                            className="hero-btn-default p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => openDrawer(sub)}
+                            title={t('subscriptions.editTip')}
+                            className="hero-btn-default p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setDeleteTarget(sub)}
+                            title={t('subscriptions.deleteTip')}
+                            className="hero-btn-default p-1.5 rounded-lg text-zinc-400 hover:text-rose-600 hover:bg-rose-500/10"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
           {filteredSubscriptions.map((sub) => {
-            const info = formatUserInfo(sub.user_info)
+            const info = formatUserInfo(sub.user_info, lang)
             return (
               <motion.div
                 key={sub.id}
                 layout
-                initial={{ opacity: 0, y: 8 }}
+                initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="hero-card hero-card-interactive p-5 flex flex-col justify-between space-y-4"
+                className="hero-card hero-card-interactive p-4 sm:p-5 flex flex-col justify-between space-y-4"
               >
                 <div className="space-y-3">
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start justify-between gap-2.5">
                     <div className="space-y-1.5 min-w-0">
                       <div className="flex items-center gap-2">
                         <span
@@ -364,7 +613,7 @@ export default function Subscriptions() {
                               : 'bg-[#2563EB]/10 text-[#2563EB] dark:text-[#60A5FA] border-[#2563EB]/20'
                           }`}
                         >
-                          {sub.type === 'local' ? '本地' : '远程'}
+                          {sub.type === 'local' ? t('dashboard.local') : t('dashboard.remote')}
                         </span>
                         <h3 className="font-bold text-sm text-zinc-900 dark:text-white truncate" title={sub.name}>
                           {sub.name}
@@ -373,12 +622,17 @@ export default function Subscriptions() {
 
                       <div className="text-[11px] text-zinc-400 font-mono truncate flex items-center gap-1.5">
                         <span className="truncate">
-                          {sub.type === 'remote' ? maskUrl(sub.url) : '自建节点批量导入'}
+                          {sub.type === 'remote' ? maskUrl(sub.url) : t('subscriptions.localImportDesc')}
                         </span>
+                        {sub.type === 'remote' && subUrlCount(sub) > 1 && (
+                          <span className="hero-chip-default text-[9px] font-mono shrink-0 tabular-nums">
+                            {t('subscriptions.urlCount', { count: subUrlCount(sub) })}
+                          </span>
+                        )}
                         {sub.type === 'remote' && (
                           <button
-                            onClick={() => copyText(sub.url, '原始订阅链接已复制')}
-                            title="复制原始链接"
+                            onClick={() => copyText(sub.url, t('subscriptions.rawCopied'))}
+                            title={t('common.copy')}
                             className="hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors shrink-0"
                           >
                             <Copy className="w-3 h-3" />
@@ -387,35 +641,35 @@ export default function Subscriptions() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
                       {sub.type === 'remote' && (
                         <button
                           onClick={() => handleRefresh(sub.id)}
                           disabled={refreshingId === sub.id}
-                          title="拉取最新节点"
-                          className="hero-btn-default p-1.5 rounded-lg text-zinc-400 hover:text-[#2563EB] dark:hover:text-[#60A5FA] disabled:opacity-50"
+                          title={t('subscriptions.refreshTip')}
+                          className="hero-btn-default p-2 sm:p-1.5 rounded-lg text-zinc-400 hover:text-[#2563EB] dark:hover:text-[#60A5FA] disabled:opacity-50"
                         >
                           <RefreshCw className={`w-3.5 h-3.5 ${refreshingId === sub.id ? 'animate-spin' : ''}`} />
                         </button>
                       )}
                       <button
                         onClick={() => openNodes(sub)}
-                        title="查看已解析节点"
-                        className="hero-btn-default p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white"
+                        title={t('subscriptions.viewNodesTip')}
+                        className="hero-btn-default p-2 sm:p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white"
                       >
                         <Eye className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={() => openModal(sub)}
-                        title="编辑订阅配置"
-                        className="hero-btn-default p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white"
+                        onClick={() => openDrawer(sub)}
+                        title={t('subscriptions.editTip')}
+                        className="hero-btn-default p-2 sm:p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white"
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => setDeleteTarget(sub)}
-                        title="删除该订阅"
-                        className="hero-btn-default p-1.5 rounded-lg text-zinc-400 hover:text-rose-600 hover:bg-rose-500/10"
+                        title={t('subscriptions.deleteTip')}
+                        className="hero-btn-default p-2 sm:p-1.5 rounded-lg text-zinc-400 hover:text-rose-600 hover:bg-rose-500/10"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -423,28 +677,41 @@ export default function Subscriptions() {
                   </div>
 
                   {info && (
-                    <div className="px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-white/[0.03] border border-zinc-200/60 dark:border-white/[0.06] flex items-center justify-between text-[11px] text-zinc-500 dark:text-zinc-400 font-mono tabular-nums">
-                      <span>{info.trafficText || '流量未知'}</span>
-                      {info.expireText && <span>到期 {info.expireText}</span>}
+                    <div className="px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-white/[0.03] border border-zinc-200/60 dark:border-white/[0.06] flex items-center justify-between gap-2 text-[11px] text-zinc-500 dark:text-zinc-400 font-mono tabular-nums">
+                      <span className="truncate">{info.trafficText || t('subscriptions.trafficUnknown')}</span>
+                      {info.expireText && (
+                        <span className="shrink-0">{t('subscriptions.expireAt', { date: info.expireText })}</span>
+                      )}
                     </div>
                   )}
 
+                  {sub.status === 'partial' && sub.error_msg && (
+                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-600 dark:text-amber-400 break-all leading-relaxed space-y-1">
+                      <div className="font-semibold">{t('subscriptions.partialTitle')}</div>
+                      <div>{sub.error_msg}</div>
+                    </div>
+                  )}
                   {sub.status === 'error' && sub.error_msg && (
-                    <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-600 dark:text-rose-400 break-all leading-relaxed">
-                      拉取异常: {sub.error_msg}
+                    <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-600 dark:text-rose-400 break-all leading-relaxed space-y-1">
+                      <div className="font-semibold">
+                        {sub.consecutive_failures > 0
+                          ? t('subscriptions.fetchFailedCached', { n: sub.consecutive_failures })
+                          : t('subscriptions.fetchFailedTitle')}
+                      </div>
+                      <div>{sub.error_msg}</div>
                     </div>
                   )}
                 </div>
 
                 <div className="pt-2.5 border-t border-zinc-100 dark:border-white/[0.06] flex items-center justify-between text-xs tabular-nums">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-zinc-400">有效节点</span>
+                    <span className="text-zinc-400">{t('subscriptions.validNodes')}</span>
                     <span className="font-bold font-mono text-zinc-900 dark:text-white">{sub.node_count || 0}</span>
                   </div>
                   <div className="flex items-center gap-1.5 font-mono text-zinc-400 text-[11px]">
                     <span
                       className={`w-1.5 h-1.5 rounded-full ${
-                        sub.status === 'error' ? 'bg-rose-500' : 'bg-emerald-500'
+                        sub.status === 'error' ? 'bg-rose-500' : sub.status === 'partial' ? 'bg-amber-500' : 'bg-emerald-500'
                       }`}
                     />
                     <span>{formatTime(sub.last_updated)}</span>
@@ -456,227 +723,255 @@ export default function Subscriptions() {
         </div>
       )}
 
-      {/* Add/Edit Modal */}
-      <AnimatePresence>
-        {showModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/55 backdrop-blur-sm"
-              onClick={() => setShowModal(false)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96, y: 8 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 8 }}
-              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
-              className="relative w-full max-w-lg bg-white dark:bg-[#11141B] rounded-2xl shadow-2xl border border-zinc-200/80 dark:border-white/10 overflow-hidden z-10"
+      {/* Slide-over Drawer */}
+      <Drawer
+        open={showDrawer}
+        onClose={() => setShowDrawer(false)}
+        size="md"
+        title={isEditing ? t('subscriptions.drawerEditTitle') : t('subscriptions.drawerAddTitle')}
+        footer={
+          <div className="flex justify-end gap-2.5">
+            <button
+              type="button"
+              onClick={() => setShowDrawer(false)}
+              className="hero-btn-bordered px-4 py-2 text-xs font-medium"
             >
-              <div className="px-6 py-4 border-b border-zinc-100 dark:border-white/[0.06] flex items-center justify-between">
-                <h2 className="text-base font-bold text-zinc-900 dark:text-white">
-                  {isEditing ? '编辑订阅源' : '添加订阅源'}
-                </h2>
+              {t('common.cancel')}
+            </button>
+            <button
+              type="submit"
+              form="subscription-form"
+              disabled={saving}
+              className="hero-btn-primary px-5 py-2 text-xs font-semibold disabled:opacity-50"
+            >
+              {saving ? t('common.saving') : t('common.save')}
+            </button>
+          </div>
+        }
+      >
+        <form id="subscription-form" onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5">
+          {!isEditing && (
+            <div className="space-y-1.5">
+              <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
+                {t('subscriptions.typeLabel')}
+              </label>
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-100 dark:bg-white/[0.04] rounded-xl">
                 <button
-                  onClick={() => setShowModal(false)}
-                  className="p-1 rounded-lg text-zinc-400 hover:text-zinc-600 dark:hover:text-white"
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, type: 'remote' }))}
+                  className={`py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
+                    form.type === 'remote'
+                      ? 'bg-white dark:bg-[#1E2330] text-[#2563EB] dark:text-[#60A5FA] shadow-xs'
+                      : 'text-zinc-500'
+                  }`}
                 >
-                  <X className="w-4 h-4" />
+                  <Rss className="w-3.5 h-3.5" />
+                  <span>{t('subscriptions.typeRemote')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, type: 'local' }))}
+                  className={`py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
+                    form.type === 'local'
+                      ? 'bg-white dark:bg-[#1E2330] text-emerald-600 dark:text-emerald-400 shadow-xs'
+                      : 'text-zinc-500'
+                  }`}
+                >
+                  <FolderDown className="w-3.5 h-3.5" />
+                  <span>{t('subscriptions.typeLocal')}</span>
                 </button>
               </div>
+            </div>
+          )}
 
-              <form onSubmit={handleSubmit} className="p-6 space-y-4">
-                {!isEditing && (
-                  <div className="space-y-1.5">
-                    <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
-                      订阅类型
-                    </label>
-                    <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-100 dark:bg-white/[0.04] rounded-xl">
-                      <button
-                        type="button"
-                        onClick={() => setForm((f) => ({ ...f, type: 'remote' }))}
-                        className={`py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
-                          form.type === 'remote'
-                            ? 'bg-white dark:bg-[#1E2330] text-[#2563EB] dark:text-[#60A5FA] shadow-xs'
-                            : 'text-zinc-500'
-                        }`}
-                      >
-                        <Rss className="w-3.5 h-3.5" />
-                        <span>远程订阅 (URL)</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setForm((f) => ({ ...f, type: 'local' }))}
-                        className={`py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
-                          form.type === 'local'
-                            ? 'bg-white dark:bg-[#1E2330] text-emerald-600 dark:text-emerald-400 shadow-xs'
-                            : 'text-zinc-500'
-                        }`}
-                      >
-                        <FolderDown className="w-3.5 h-3.5" />
-                        <span>本地订阅 (批量导入)</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
+          <div>
+            <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
+              {t('subscriptions.nameLabel')}
+            </label>
+            <input
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              type="text"
+              required
+              placeholder={form.type === 'local' ? t('subscriptions.nameLocalPh') : t('subscriptions.nameRemotePh')}
+              className="hero-input px-3.5 py-2.5 text-sm sm:text-xs text-zinc-900 dark:text-white"
+            />
+          </div>
 
+          {form.type === 'remote' ? (
+            <>
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
+                  {t('subscriptions.urlLabel')}
+                </label>
+                <textarea
+                  value={form.urls}
+                  onChange={(e) => setForm((f) => ({ ...f, urls: e.target.value }))}
+                  rows={form.urls.split('\n').length > 2 ? Math.min(form.urls.split('\n').length + 1, 6) : 3}
+                  required
+                  placeholder={'https://...\nhttps://... (可选，多链接逐行填写，按顺序合并)'}
+                  className="hero-input px-3.5 py-2.5 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white leading-relaxed resize-y"
+                />
+                <p className="text-[11px] text-zinc-400 mt-1">{t('subscriptions.urlsHint')}</p>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
+                  {t('subscriptions.fetchProxyLabel')}
+                </label>
+                <input
+                  value={form.fetch_proxy_url}
+                  onChange={(e) => setForm((f) => ({ ...f, fetch_proxy_url: e.target.value }))}
+                  type="text"
+                  placeholder={t('subscriptions.fetchProxyPh')}
+                  className="hero-input px-3.5 py-2.5 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white"
+                />
+                <p className="text-[11px] text-zinc-400 mt-1">{t('subscriptions.fetchProxyHint')}</p>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
+                  {t('subscriptions.failurePolicyLabel')}
+                </label>
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-100 dark:bg-white/[0.04] rounded-xl">
+                  {[
+                    { value: 'strict', label: t('subscriptions.policyStrict'), desc: t('subscriptions.policyStrictDesc') },
+                    { value: 'skip', label: t('subscriptions.policySkip'), desc: t('subscriptions.policySkipDesc') }
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, failure_policy: opt.value }))}
+                      className={`py-2 px-2 text-xs font-bold rounded-lg transition-all ${
+                        (form.failure_policy || 'strict') === opt.value
+                          ? 'bg-white dark:bg-[#1E2330] text-[#2563EB] dark:text-[#60A5FA] shadow-xs'
+                          : 'text-zinc-500'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-zinc-400 mt-1">
+                  {(form.failure_policy || 'strict') === 'strict' ? t('subscriptions.policyStrictDesc') : t('subscriptions.policySkipDesc')}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
+                  {t('subscriptions.uaLabel')}
+                </label>
+                <input
+                  value={form.user_agent}
+                  onChange={(e) => setForm((f) => ({ ...f, user_agent: e.target.value }))}
+                  type="text"
+                  placeholder="ClashMeta/v1.18.0 (SubDeck)"
+                  className="hero-input px-3.5 py-2.5 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4 pt-1">
                 <div>
                   <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
-                    订阅名称
+                    {t('subscriptions.intervalLabel')}
                   </label>
                   <input
-                    value={form.name}
-                    onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                    type="text"
-                    required
-                    placeholder={form.type === 'local' ? '例如：自建专线节点' : '例如：机场A-主线'}
-                    className="hero-input px-3.5 py-2.5 text-xs text-zinc-900 dark:text-white"
+                    value={form.interval_hours}
+                    onChange={(e) => setForm((f) => ({ ...f, interval_hours: parseInt(e.target.value) || 12 }))}
+                    type="number"
+                    min="1"
+                    max="720"
+                    className="hero-input px-3.5 py-2 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white"
                   />
                 </div>
-
-                {form.type === 'remote' ? (
-                  <>
-                    <div>
-                      <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
-                        远程订阅链接 (URL)
-                      </label>
-                      <input
-                        value={form.url}
-                        onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
-                        type="url"
-                        required
-                        placeholder="https://example.com/api/v1/client/subscribe?token=..."
-                        className="hero-input px-3.5 py-2.5 text-xs font-mono text-zinc-900 dark:text-white"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
-                        自定义 User-Agent
-                      </label>
-                      <input
-                        value={form.user_agent}
-                        onChange={(e) => setForm((f) => ({ ...f, user_agent: e.target.value }))}
-                        type="text"
-                        placeholder="ClashMeta/v1.18.0 (SubDeck)"
-                        className="hero-input px-3.5 py-2.5 text-xs font-mono text-zinc-900 dark:text-white"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4 pt-1">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
-                          更新周期 (小时)
-                        </label>
-                        <input
-                          value={form.interval_hours}
-                          onChange={(e) => setForm((f) => ({ ...f, interval_hours: parseInt(e.target.value) || 12 }))}
-                          type="number"
-                          min="1"
-                          max="720"
-                          className="hero-input px-3.5 py-2 text-xs font-mono text-zinc-900 dark:text-white"
-                        />
-                      </div>
-                      <div className="flex items-center pt-5">
-                        <label className="flex items-center gap-2.5 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={form.auto_update}
-                            onChange={(e) => setForm((f) => ({ ...f, auto_update: e.target.checked }))}
-                            className="rounded text-[#2563EB] focus:ring-[#2563EB] w-4 h-4"
-                          />
-                          <span className="text-xs text-zinc-700 dark:text-zinc-300 font-medium">后台自动定时更新</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    <div className="pt-1">
-                      <label className="flex items-center gap-2.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={form.insecure_skip_verify}
-                          onChange={(e) => setForm((f) => ({ ...f, insecure_skip_verify: e.target.checked }))}
-                          className="rounded text-[#2563EB] focus:ring-[#2563EB] w-4 h-4"
-                        />
-                        <span className="text-xs text-zinc-600 dark:text-zinc-400">
-                          跳过 TLS 证书校验（仅自签证书机场需要）
-                        </span>
-                      </label>
-                    </div>
-                  </>
-                ) : (
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
-                        批量粘贴节点链接（一行一条）
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setForm((f) => ({
-                              ...f,
-                              raw_content:
-                                'hysteria2://passwd@hk-01.example.com:443?sni=hk.example.com#🇭🇰 香港01-专线\nvmess://eyJ2IjoiMiIsInBzIjoi8J+Hr/Cfh7Ug5pel5pysMDEtQkdQIiwiYWRkIjoianAtMDEuZXhhbXBsZS5jb20iLCJwb3J0IjoiNDQzIiwiaWQiOiI5OTk5OTk5OS05OTk5LTk5OTktOTk5OS05OTk5OTk5OTk5OTkiLCJhaWQiOiIwIiwic2N5IjoiYXV0byIsIm5ldCI6IndzIiwidHlwZSI6Im5vbmUiLCJob3N0IjoiIiwicGF0aCI6Ii8iLCJ0bHMiOiJ0bHMiLCJzbmkiOiIifQ==\nss://YWVzLTI1Ni1nY206cGFzc3dvcmRAMTI3LjAuMC4xOjEwODAy#🇸🇬 新加坡01-Direct'
-                            }))
-                          }
-                          className="text-[11px] text-[#2563EB] dark:text-[#60A5FA] font-semibold hover:underline"
-                        >
-                          填入演示样例
-                        </button>
-                        <span className="text-zinc-300 dark:text-zinc-600">|</span>
-                        <span className="hero-chip-success text-[10px] font-mono font-medium tabular-nums">
-                          已识别 {localRecognizedCount} 个节点
-                        </span>
-                      </div>
-                    </div>
-                    <textarea
-                      value={form.raw_content}
-                      onChange={(e) => setForm((f) => ({ ...f, raw_content: e.target.value }))}
-                      rows={7}
-                      required
-                      placeholder={`支持粘贴 vmess://, vless://, ss://, trojan://, anytls://, hysteria2://, tuic://, wireguard://, snell:// 格式...\n也可以直接粘贴包含多个节点的 Base64 订阅字符串`}
-                      className="hero-input p-3 text-xs font-mono text-zinc-900 dark:text-white"
+                <div className="flex items-center sm:pt-5">
+                  <label className="flex items-center gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.auto_update}
+                      onChange={(e) => setForm((f) => ({ ...f, auto_update: e.target.checked }))}
+                      className="rounded text-[#2563EB] focus:ring-[#2563EB] w-4 h-4"
                     />
+                    <span className="text-xs text-zinc-700 dark:text-zinc-300 font-medium">
+                      {t('subscriptions.autoUpdateLabel')}
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="pt-1">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.insecure_skip_verify}
+                    onChange={(e) => setForm((f) => ({ ...f, insecure_skip_verify: e.target.checked }))}
+                    className="rounded text-[#2563EB] focus:ring-[#2563EB] w-4 h-4"
+                  />
+                  <span className="text-xs text-zinc-600 dark:text-zinc-400">
+                    {t('subscriptions.skipVerifyLabel')}
+                  </span>
+                </label>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
+                  {t('subscriptions.contentLabel')}
+                </label>
+                <span className="hero-chip-success text-[10px] font-mono font-medium tabular-nums">
+                  {t('subscriptions.recognizedCount', { count: localRecognizedCount })}
+                </span>
+              </div>
+
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  setIsDraggingFile(true)
+                }}
+                onDragLeave={() => setIsDraggingFile(false)}
+                onDrop={handleFileDrop}
+                className={`relative rounded-xl transition-all ${
+                  isDraggingFile ? 'ring-2 ring-[#2563EB] bg-[#2563EB]/5' : ''
+                }`}
+              >
+                <textarea
+                  value={form.raw_content}
+                  onChange={(e) => setForm((f) => ({ ...f, raw_content: e.target.value }))}
+                  rows={10}
+                  required
+                  placeholder={t('subscriptions.contentPh')}
+                  className="hero-input p-3.5 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white leading-relaxed"
+                />
+                {isDraggingFile && (
+                  <div className="absolute inset-0 rounded-xl flex items-center justify-center bg-[#2563EB]/10 backdrop-blur-[1px] pointer-events-none">
+                    <span className="px-3 py-1.5 rounded-lg bg-[#2563EB] text-white text-xs font-semibold flex items-center gap-1.5 shadow-lg">
+                      <Upload className="w-3.5 h-3.5" />
+                      {t('subscriptions.dropFileHint')}
+                    </span>
                   </div>
                 )}
-
-                <div className="pt-3 flex justify-end gap-2.5 border-t border-zinc-100 dark:border-white/[0.06]">
-                  <button
-                    type="button"
-                    onClick={() => setShowModal(false)}
-                    className="hero-btn-bordered px-4 py-2 text-xs font-medium"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="hero-btn-primary px-5 py-2 text-xs font-semibold disabled:opacity-50"
-                  >
-                    {saving ? '保存中...' : '确定保存'}
-                  </button>
-                </div>
-              </form>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+              </div>
+            </div>
+          )}
+        </form>
+      </Drawer>
 
       <NodesModal
         open={nodesModal.open}
         title={nodesModal.title}
         nodes={nodesModal.nodes}
-        onClose={() => setNodesModal({ open: false, title: '', nodes: [] })}
+        probing={probingModal}
+        onProbe={handleProbeNodes}
+        onClose={() => setNodesModal({ open: false, subId: '', title: '', nodes: [] })}
         onCopy={copyText}
       />
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title="确认删除订阅源？"
-        description={deleteTarget ? `即将删除订阅源 "${deleteTarget.name}"，该操作不可撤销。` : ''}
-        confirmText="确认删除"
+        title={t('subscriptions.deleteTitle')}
+        description={deleteTarget ? t('subscriptions.deleteDesc', { name: deleteTarget.name }) : ''}
+        confirmText={t('common.delete')}
         loading={deleting}
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}

@@ -200,3 +200,46 @@ func TestURIEdgeCasesAndSafety(t *testing.T) {
 		t.Fatalf("unexpected reparsed node: %+v", reparsed)
 	}
 }
+
+func TestHysteria2PeerObfsNoneAndOfficialBandwidthParams(t *testing.T) {
+	// Real-world style link: peer (SNI alias), hpkp cert pin, obfs=none,
+	// official upmbps/downmbps and mport port hopping.
+	raw := "hysteria2://pw@hy.example.com:8881?peer=addons.mozilla.org&hpkp=BC:1B:F4:DB&obfs=none&upmbps=200&downmbps=1000&mport=8881,50000-51000#hy2"
+	node, err := ParseURI(raw)
+	if err != nil {
+		t.Fatalf("parse hysteria2: %v", err)
+	}
+	if node.SNI != "addons.mozilla.org" {
+		t.Fatalf("expected SNI from peer param, got %q", node.SNI)
+	}
+	if !node.Insecure {
+		t.Fatal("expected insecure=true when a cert pin (hpkp) is present")
+	}
+	if node.Hy2Obfs != "" {
+		t.Fatalf("expected obfs=none normalized to empty, got %q", node.Hy2Obfs)
+	}
+	if node.Hy2UpMbps != 200 || node.Hy2DownMbps != 1000 {
+		t.Fatalf("expected upmbps/downmbps parsed, got up=%d down=%d", node.Hy2UpMbps, node.Hy2DownMbps)
+	}
+	if node.Hy2Ports != "8881,50000-51000" {
+		t.Fatalf("expected mport preserved, got %q", node.Hy2Ports)
+	}
+}
+
+func TestTUICAndAnyTLSPeerFallback(t *testing.T) {
+	tuic, err := ParseURI("tuic://uuid:pw@t.example.com:443?peer=masq.example.com&congestion_control=bbr#tuic")
+	if err != nil {
+		t.Fatalf("parse tuic: %v", err)
+	}
+	if tuic.SNI != "masq.example.com" {
+		t.Fatalf("expected TUIC SNI from peer, got %q", tuic.SNI)
+	}
+
+	anytls, err := ParseURI("anytls://pw@a.example.com:443?peer=masq.example.com&pinSHA256=9FEE02A3#at")
+	if err != nil {
+		t.Fatalf("parse anytls: %v", err)
+	}
+	if anytls.SNI != "masq.example.com" || !anytls.Insecure {
+		t.Fatalf("expected AnyTLS peer SNI + insecure for pin, got sni=%q insecure=%v", anytls.SNI, anytls.Insecure)
+	}
+}

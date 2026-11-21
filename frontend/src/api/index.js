@@ -63,10 +63,17 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ username, password })
   }),
-  updatePassword: (old_password, new_password) => request('/api/auth/password', {
-    method: 'POST',
-    body: JSON.stringify({ old_password, new_password })
-  }),
+  updatePassword: async (old_password, new_password) => {
+    const res = await request('/api/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password, new_password })
+    })
+    if (res?.token) {
+      setToken(res.token)
+    }
+    return res
+  },
+  logoutAll: () => request('/api/auth/logout-all', { method: 'POST' }),
   getMe: () => request('/api/auth/me'),
 
   // Dashboard
@@ -88,6 +95,9 @@ export const api = {
   refreshSubscription: (id) => request(`/api/subscriptions/${id}/refresh`, {
     method: 'POST'
   }),
+  probeSubscription: (id) => request(`/api/subscriptions/${id}/probe`, {
+    method: 'POST'
+  }),
   getSubscriptionNodes: (id) => request(`/api/subscriptions/${id}/nodes`),
 
   // Profiles (Combinations)
@@ -106,7 +116,25 @@ export const api = {
   resetProfileToken: (id) => request(`/api/profiles/${id}/reset-token`, {
     method: 'POST'
   }),
+  probeProfile: (id) => request(`/api/profiles/${id}/probe`, {
+    method: 'POST'
+  }),
   previewProfile: (id) => request(`/api/profiles/${id}/preview`),
+  previewDraftProfile: (data) => request('/api/profiles/preview', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  }),
+
+  // System Settings & Webhook
+  getSystemSettings: () => request('/api/system/settings'),
+  updateSystemSettings: (data) => request('/api/system/settings', {
+    method: 'PUT',
+    body: JSON.stringify(data)
+  }),
+  testWebhook: (webhook_url) => request('/api/system/webhook-test', {
+    method: 'POST',
+    body: JSON.stringify({ webhook_url })
+  }),
 
   // System Backup & Restore
   downloadBackup: async () => {

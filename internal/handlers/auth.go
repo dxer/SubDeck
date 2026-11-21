@@ -89,7 +89,26 @@ func (h *AuthHandler) UpdatePassword(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "密码修改成功"})
+	if newVer, err := h.db.BumpTokenVersion(); err == nil {
+		auth.SetTokenVersion(newVer)
+	}
+	newToken, _ := auth.GenerateToken(username.(string))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "密码修改成功，旧设备登录凭证已失效",
+		"token":   newToken,
+	})
+}
+
+// LogoutAll revokes all previously issued JWTs by incrementing token_version.
+func (h *AuthHandler) LogoutAll(c *gin.Context) {
+	newVer, err := h.db.BumpTokenVersion()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "注销所有会话失败"})
+		return
+	}
+	auth.SetTokenVersion(newVer)
+	c.JSON(http.StatusOK, gin.H{"message": "已吊销全部旧登录凭证，请重新登录"})
 }
 
 func (h *AuthHandler) Me(c *gin.Context) {

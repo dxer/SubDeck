@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -12,9 +13,31 @@ import (
 )
 
 var (
-	jwtSecretMu sync.RWMutex
-	jwtSecret   []byte
+	jwtSecretMu         sync.RWMutex
+	jwtSecret           []byte
+	currentTokenVersion atomic.Int64
 )
+
+func init() {
+	currentTokenVersion.Store(1)
+}
+
+// SetTokenVersion sets the minimum active JWT token version (bumping invalidates older tokens).
+func SetTokenVersion(v int) {
+	if v < 1 {
+		v = 1
+	}
+	currentTokenVersion.Store(int64(v))
+}
+
+// GetTokenVersion returns the currently active JWT token version.
+func GetTokenVersion() int {
+	v := int(currentTokenVersion.Load())
+	if v < 1 {
+		return 1
+	}
+	return v
+}
 
 // SetJWTSecret configures the signing secret key used for JWT tokens.
 func SetJWTSecret(secret string) {
@@ -45,13 +68,15 @@ func getJWTSecret() []byte {
 }
 
 type Claims struct {
-	Username string `json:"username"`
+	Username     string `json:"username"`
+	TokenVersion int    `json:"tv,omitempty"`
 	jwt.RegisteredClaims
 }
 
 func GenerateToken(username string) (string, error) {
 	claims := Claims{
-		Username: username,
+		Username:     username,
+		TokenVersion: GetTokenVersion(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)), // 7 days
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -77,6 +102,9 @@ func ValidateToken(tokenString string) (*Claims, error) {
 	}
 
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+		if claims.TokenVersion != GetTokenVersion() {
+			return nil, errors.New("token has been revoked")
+		}
 		return claims, nil
 	}
 

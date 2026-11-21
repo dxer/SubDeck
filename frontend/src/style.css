@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "@heroui/styles";
 
 @theme {
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
@@ -12,9 +11,9 @@
   color-scheme: light;
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
-  --surface-canvas: #f6f7f9;
+  --surface-canvas: #f8f9fb;
   --surface-card: #ffffff;
-  --surface-inset: #f1f3f6;
+  --surface-inset: #f3f5f8;
   --border-hairline: rgba(15, 23, 42, 0.08);
   font-family: var(--font-sans);
   text-rendering: optimizeLegibility;
@@ -28,18 +27,17 @@
   --accent-hover: #2563eb;
   --surface-canvas: #090b0f;
   --surface-card: #11141b;
-  --surface-inset: #181c26;
+  --surface-inset: #171b24;
   --border-hairline: rgba(255, 255, 255, 0.08);
 }
 
-/* Precision ambient dot-grid canvas */
 .ambient-grid {
-  background-image: radial-gradient(rgba(15, 23, 42, 0.09) 1px, transparent 1px);
+  background-image: radial-gradient(rgba(15, 23, 42, 0.08) 1px, transparent 1px);
   background-size: 22px 22px;
 }
 
 .dark .ambient-grid {
-  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+  background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
   background-size: 22px 22px;
 }
 
@@ -47,49 +45,48 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Custom modern scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(113, 113, 122, 0.28);
+  background: rgba(113, 113, 122, 0.24);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(113, 113, 122, 0.45);
+  background: rgba(113, 113, 122, 0.42);
 }
 
-/* Surface & card primitives */
+/* Flagship surface primitives */
 .hero-card {
   background-color: var(--surface-card);
   border: 1px solid var(--border-hairline);
-  border-radius: 1rem;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 0.875rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: border-color 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .dark .hero-card {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 8px 24px -8px rgba(0, 0, 0, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 6px 20px -10px rgba(0, 0, 0, 0.6);
 }
 
 .hero-card-interactive:hover {
-  border-color: rgba(37, 99, 235, 0.35);
-  box-shadow: 0 6px 20px -6px rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.32);
+  box-shadow: 0 4px 16px -6px rgba(37, 99, 235, 0.09);
 }
 
 .dark .hero-card-interactive:hover {
-  border-color: rgba(59, 130, 246, 0.4);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 10px 28px -8px rgba(0, 0, 0, 0.65);
+  border-color: rgba(59, 130, 246, 0.36);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 10px 26px -10px rgba(0, 0, 0, 0.7);
 }
 
 /* Input primitive */
 .hero-input {
   width: 100%;
-  border-radius: 0.75rem;
+  border-radius: 0.625rem;
   border: 1px solid var(--border-hairline);
   background-color: var(--surface-inset);
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
@@ -97,12 +94,13 @@
 
 .hero-input:focus {
   outline: none;
+  background-color: var(--surface-card);
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 .dark .hero-input:focus {
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
 }
 
 /* Button primitives */
@@ -111,7 +109,7 @@
   align-items: center;
   justify-content: center;
   font-weight: 600;
-  border-radius: 0.75rem;
+  border-radius: 0.625rem;
   transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
   cursor: pointer;
   user-select: none;
@@ -127,10 +125,10 @@
   align-items: center;
   justify-content: center;
   font-weight: 600;
-  border-radius: 0.75rem;
+  border-radius: 0.625rem;
   background-color: #2563eb;
   color: #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.18);
   transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
   cursor: pointer;
   user-select: none;
@@ -150,7 +148,7 @@
   align-items: center;
   justify-content: center;
   font-weight: 600;
-  border-radius: 0.75rem;
+  border-radius: 0.625rem;
   background-color: #e11d48;
   color: #ffffff;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.16);
@@ -173,7 +171,7 @@
   align-items: center;
   justify-content: center;
   font-weight: 600;
-  border-radius: 0.75rem;
+  border-radius: 0.625rem;
   background-color: rgba(37, 99, 235, 0.08);
   color: #2563eb;
   transition: all 0.15s ease;
@@ -194,8 +192,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0.75rem;
-  background-color: rgba(113, 113, 122, 0.09);
+  border-radius: 0.625rem;
+  background-color: rgba(113, 113, 122, 0.08);
   color: inherit;
   transition: all 0.15s ease;
   cursor: pointer;
@@ -203,7 +201,7 @@
 }
 
 .hero-btn-default:hover {
-  background-color: rgba(113, 113, 122, 0.16);
+  background-color: rgba(113, 113, 122, 0.15);
 }
 
 .hero-btn-default:active {
@@ -214,7 +212,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0.75rem;
+  border-radius: 0.625rem;
   background-color: var(--surface-card);
   border: 1px solid var(--border-hairline);
   color: #27272a;
@@ -231,7 +229,7 @@
 
 .hero-btn-bordered:hover {
   background-color: var(--surface-inset);
-  border-color: rgba(113, 113, 122, 0.35);
+  border-color: rgba(113, 113, 122, 0.3);
 }
 
 .dark .hero-btn-bordered:hover {
@@ -247,7 +245,7 @@
 .hero-chip-primary {
   display: inline-flex;
   align-items: center;
-  padding: 0.18rem 0.6rem;
+  padding: 0.16rem 0.55rem;
   border-radius: 9999px;
   font-size: 0.75rem;
   font-weight: 600;
@@ -265,7 +263,7 @@
 .hero-chip-success {
   display: inline-flex;
   align-items: center;
-  padding: 0.18rem 0.6rem;
+  padding: 0.16rem 0.55rem;
   border-radius: 9999px;
   font-size: 0.75rem;
   font-weight: 600;
@@ -282,7 +280,7 @@
 .hero-chip-default {
   display: inline-flex;
   align-items: center;
-  padding: 0.18rem 0.6rem;
+  padding: 0.16rem 0.55rem;
   border-radius: 9999px;
   font-size: 0.75rem;
   background-color: rgba(113, 113, 122, 0.07);

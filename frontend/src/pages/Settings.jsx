@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   DatabaseBackup,
@@ -9,12 +9,17 @@ import {
   CheckCircle2,
   AlertCircle,
   Eye,
-  EyeOff
+  EyeOff,
+  Sliders,
+  Bell,
+  LogOut
 } from 'lucide-react'
-import { api } from '../api'
+import { api, setToken } from '../api'
+import { useI18n } from '../i18n'
 import ConfirmDialog from '../components/ConfirmDialog'
 
 export default function Settings() {
+  const { t } = useI18n()
   const [backupLoading, setBackupLoading] = useState(false)
   const [restoreLoading, setRestoreLoading] = useState(false)
   const [pendingRestoreFile, setPendingRestoreFile] = useState(null)
@@ -32,6 +37,72 @@ export default function Settings() {
   const [pwdSuccess, setPwdSuccess] = useState('')
   const [pwdError, setPwdError] = useState('')
 
+  const [sysSettings, setSysSettings] = useState({
+    webhook_url: '',
+    ruleset_mirror: '',
+    allow_private_fetch: false
+  })
+  const [sysLoading, setSysLoading] = useState(false)
+  const [sysTesting, setSysTesting] = useState(false)
+  const [sysMsg, setSysMsg] = useState('')
+  const [sysErr, setSysErr] = useState('')
+
+  useEffect(() => {
+    api.getSystemSettings()
+      .then((res) => {
+        if (res) {
+          setSysSettings({
+            webhook_url: res.webhook_url || '',
+            ruleset_mirror: res.ruleset_mirror || '',
+            allow_private_fetch: Boolean(res.allow_private_fetch)
+          })
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  const handleSaveSystemSettings = async (e) => {
+    e.preventDefault()
+    setSysLoading(true)
+    setSysMsg('')
+    setSysErr('')
+    try {
+      const res = await api.updateSystemSettings(sysSettings)
+      if (res?.settings) {
+        setSysSettings(res.settings)
+      }
+      setSysMsg(res?.message || t('common.save'))
+    } catch (err) {
+      setSysErr(err.message || 'Save failed')
+    } finally {
+      setSysLoading(false)
+    }
+  }
+
+  const handleTestWebhook = async () => {
+    setSysTesting(true)
+    setSysMsg('')
+    setSysErr('')
+    try {
+      const res = await api.testWebhook(sysSettings.webhook_url)
+      setSysMsg(res?.message || 'OK')
+    } catch (err) {
+      setSysErr(err.message || 'Webhook failed')
+    } finally {
+      setSysTesting(false)
+    }
+  }
+
+  const handleLogoutAll = async () => {
+    try {
+      await api.logoutAll()
+      setToken('')
+      window.location.href = '/login'
+    } catch (err) {
+      setPwdError(err.message || 'Failed')
+    }
+  }
+
   const handleDownloadBackup = async () => {
     setBackupLoading(true)
     setRestoreMsg('')
@@ -39,7 +110,7 @@ export default function Settings() {
     try {
       await api.downloadBackup()
     } catch (err) {
-      setRestoreErr(err.message || '下载热备份失败')
+      setRestoreErr(err.message || 'Export failed')
     } finally {
       setBackupLoading(false)
     }
@@ -64,13 +135,13 @@ export default function Settings() {
     try {
       await api.restoreBackup(pendingRestoreFile)
       setPendingRestoreFile(null)
-      setRestoreMsg('数据库已成功恢复！系统正在重新加载...')
+      setRestoreMsg(t('settings.restoreSuccess'))
       setTimeout(() => {
         window.location.reload()
-      }, 1500)
+      }, 1400)
     } catch (err) {
       setPendingRestoreFile(null)
-      setRestoreErr(err.message || '恢复数据库失败，请确保文件是有效的 SQLite 数据库')
+      setRestoreErr(err.message || 'Restore failed')
     } finally {
       setRestoreLoading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -84,8 +155,14 @@ export default function Settings() {
     if (p.length >= 10) score++
     if (/[A-Z]/.test(p) && /[a-z]/.test(p)) score++
     if (/[0-9]/.test(p) || /[^A-Za-z0-9]/.test(p)) score++
-    const labels = ['', '较弱', '一般', '良好', '强']
-    return { score, label: labels[score] || '强' }
+    const labels = [
+      '',
+      t('settings.strengthWeak'),
+      t('settings.strengthFair'),
+      t('settings.strengthGood'),
+      t('settings.strengthStrong')
+    ]
+    return { score, label: labels[score] || t('settings.strengthStrong') }
   })()
 
   const handleChangePassword = async (e) => {
@@ -94,74 +171,65 @@ export default function Settings() {
     setPwdError('')
 
     if (pwdForm.newPassword.length < 6) {
-      setPwdError('新密码长度不能少于 6 位')
+      setPwdError(t('settings.pwdMinLen'))
       return
     }
 
     if (pwdForm.newPassword !== pwdForm.confirmPassword) {
-      setPwdError('两次输入的新密码不一致')
+      setPwdError(t('settings.pwdMismatch'))
       return
     }
 
     setPwdLoading(true)
     try {
       await api.updatePassword(pwdForm.oldPassword, pwdForm.newPassword)
-      setPwdSuccess('管理员登录密码已成功更新！请妥善保管新密码。')
+      setPwdSuccess(t('settings.pwdSuccess'))
       setPwdForm({
         oldPassword: '',
         newPassword: '',
         confirmPassword: ''
       })
     } catch (err) {
-      setPwdError(err.message || '修改密码失败')
+      setPwdError(err.message || 'Failed')
     } finally {
       setPwdLoading(false)
     }
   }
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
-      {/* Header Banner */}
-      <div className="hero-card p-5 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-zinc-900 dark:text-white">
-            系统设置与安全
-          </h1>
-          <p className="text-xs text-zinc-400 mt-0.5">管理 SQLite 热备份快照、管理员凭证与安全运行策略。</p>
-        </div>
+    <div className="space-y-5 sm:space-y-6 max-w-4xl mx-auto">
+      <div className="pb-1">
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-zinc-900 dark:text-white">
+          {t('settings.title')}
+        </h1>
       </div>
 
       {/* Backup & Restore Card */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="hero-card p-6 space-y-4"
+        className="hero-card p-4 sm:p-6 space-y-4"
       >
         <div className="flex items-center gap-3 pb-3.5 border-b border-zinc-100 dark:border-white/[0.06]">
-          <div className="w-9 h-9 rounded-xl bg-[#2563EB]/10 text-[#2563EB] dark:text-[#60A5FA] flex items-center justify-center">
+          <div className="w-9 h-9 rounded-xl bg-[#2563EB]/10 text-[#2563EB] dark:text-[#60A5FA] flex items-center justify-center shrink-0">
             <DatabaseBackup className="w-4 h-4" />
           </div>
-          <div>
-            <h2 className="text-sm font-bold text-zinc-900 dark:text-white">数据库热备份与恢复</h2>
-            <p className="text-[11px] text-zinc-400">
-              基于 SQLite WAL Checkpoint 机制，导出与原子恢复前均会自动校验数据库完整性。
-            </p>
-          </div>
+          <h2 className="text-sm font-bold text-zinc-900 dark:text-white">{t('settings.backupTitle')}</h2>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 pt-1">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3 pt-1">
           <button
             onClick={handleDownloadBackup}
             disabled={backupLoading}
-            className="hero-btn-primary px-4 py-2.5 text-xs font-semibold gap-2 disabled:opacity-50"
+            className="hero-btn-primary px-4 py-2.5 text-xs font-semibold gap-2 disabled:opacity-50 w-full sm:w-auto"
           >
             <Download className="w-4 h-4" />
-            <span>{backupLoading ? '正在打包...' : '下载数据库备份 (.db)'}</span>
+            <span>{backupLoading ? t('settings.downloading') : t('settings.downloadBackup')}</span>
           </button>
 
-          <label className="hero-btn-bordered px-4 py-2.5 text-xs font-semibold gap-2 cursor-pointer">
+          <label className="hero-btn-bordered px-4 py-2.5 text-xs font-semibold gap-2 cursor-pointer w-full sm:w-auto justify-center">
             <Upload className="w-4 h-4 text-emerald-500" />
-            <span>从备份文件恢复</span>
+            <span>{t('settings.restoreBackup')}</span>
             <input
               ref={fileInputRef}
               type="file"
@@ -199,21 +267,138 @@ export default function Settings() {
         </AnimatePresence>
       </motion.div>
 
+      {/* Runtime Policies Card */}
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.02 }}
+        className="hero-card p-4 sm:p-6 space-y-4"
+      >
+        <div className="flex items-center gap-3 pb-3.5 border-b border-zinc-100 dark:border-white/[0.06]">
+          <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+            <Sliders className="w-4 h-4" />
+          </div>
+          <h2 className="text-sm font-bold text-zinc-900 dark:text-white">{t('settings.opsTitle')}</h2>
+        </div>
+
+        <AnimatePresence>
+          {sysMsg && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              className="p-3 text-xs rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-2"
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{sysMsg}</span>
+            </motion.div>
+          )}
+          {sysErr && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              className="p-3 text-xs rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 font-medium flex items-center gap-2"
+            >
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{sysErr}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <form onSubmit={handleSaveSystemSettings} className="space-y-4 max-w-2xl">
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
+                {t('settings.webhookLabel')}
+              </label>
+              <button
+                type="button"
+                disabled={sysTesting || !sysSettings.webhook_url.trim()}
+                onClick={handleTestWebhook}
+                className="text-[11px] font-semibold text-[#2563EB] dark:text-[#60A5FA] hover:underline disabled:opacity-40 flex items-center gap-1 shrink-0"
+              >
+                <Bell className="w-3 h-3" />
+                <span>{sysTesting ? t('settings.testingWebhook') : t('settings.testWebhook')}</span>
+              </button>
+            </div>
+            <input
+              type="url"
+              value={sysSettings.webhook_url}
+              onChange={(e) => setSysSettings((s) => ({ ...s, webhook_url: e.target.value }))}
+              placeholder={t('settings.webhookPh')}
+              className="hero-input px-3.5 py-2.5 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white"
+            />
+            <p className="text-[11px] text-zinc-400 mt-1">{t('settings.webhookHint')}</p>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
+                {t('settings.mirrorLabel')}
+              </label>
+              <div className="flex items-center gap-2 text-[11px] shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSysSettings((s) => ({ ...s, ruleset_mirror: '' }))}
+                  className="text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
+                >
+                  {t('settings.mirrorDirect')}
+                </button>
+                <span className="text-zinc-300 dark:text-zinc-700">|</span>
+                <button
+                  type="button"
+                  onClick={() => setSysSettings((s) => ({ ...s, ruleset_mirror: 'https://ghproxy.net/' }))}
+                  className="text-[#2563EB] dark:text-[#60A5FA] hover:underline font-medium"
+                >
+                  ghproxy.net
+                </button>
+              </div>
+            </div>
+            <input
+              type="url"
+              value={sysSettings.ruleset_mirror}
+              onChange={(e) => setSysSettings((s) => ({ ...s, ruleset_mirror: e.target.value }))}
+              placeholder={t('settings.mirrorPh')}
+              className="hero-input px-3.5 py-2.5 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white"
+            />
+          </div>
+
+          <label className="flex items-center justify-between p-3.5 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 dark:bg-white/[0.03] cursor-pointer gap-3">
+            <div className="min-w-0">
+              <span className="text-xs font-bold text-zinc-900 dark:text-white">{t('settings.allowPrivateTitle')}</span>
+              <p className="text-[11px] text-zinc-400 mt-0.5">{t('settings.allowPrivateDesc')}</p>
+            </div>
+            <input
+              type="checkbox"
+              checked={!!sysSettings.allow_private_fetch}
+              onChange={(e) => setSysSettings((s) => ({ ...s, allow_private_fetch: e.target.checked }))}
+              className="w-4 h-4 rounded text-[#2563EB] focus:ring-[#2563EB] shrink-0"
+            />
+          </label>
+
+          <button
+            type="submit"
+            disabled={sysLoading}
+            className="hero-btn-primary px-5 py-2.5 text-xs font-semibold disabled:opacity-50 w-full sm:w-auto"
+          >
+            {sysLoading ? t('common.saving') : t('settings.saveOps')}
+          </button>
+        </form>
+      </motion.div>
+
       {/* Password Change Card */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.04 }}
-        className="hero-card p-6 space-y-4"
+        className="hero-card p-4 sm:p-6 space-y-4"
       >
         <div className="flex items-center gap-3 pb-3.5 border-b border-zinc-100 dark:border-white/[0.06]">
-          <div className="w-9 h-9 rounded-xl bg-zinc-100 dark:bg-white/10 text-zinc-700 dark:text-zinc-200 flex items-center justify-center">
+          <div className="w-9 h-9 rounded-xl bg-zinc-100 dark:bg-white/10 text-zinc-700 dark:text-zinc-200 flex items-center justify-center shrink-0">
             <KeyRound className="w-4 h-4" />
           </div>
-          <div>
-            <h2 className="text-sm font-bold text-zinc-900 dark:text-white">修改管理员登录密码</h2>
-            <p className="text-[11px] text-zinc-400">建议使用 10 位以上包含大小写与数字的高强度密码。</p>
-          </div>
+          <h2 className="text-sm font-bold text-zinc-900 dark:text-white">{t('settings.passwordTitle')}</h2>
         </div>
 
         <AnimatePresence>
@@ -242,12 +427,12 @@ export default function Settings() {
           )}
         </AnimatePresence>
 
-        <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
+        <form onSubmit={handleChangePassword} className="space-y-4 w-full sm:max-w-md">
           <div className="space-y-3">
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
-                  当前旧密码
+                  {t('settings.oldPwd')}
                 </label>
                 <button
                   type="button"
@@ -255,7 +440,7 @@ export default function Settings() {
                   className="text-[11px] text-zinc-400 hover:text-[#2563EB] dark:hover:text-[#60A5FA] flex items-center gap-1 transition-colors"
                 >
                   {showPasswords ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                  <span>{showPasswords ? '隐藏密码' : '显示密码'}</span>
+                  <span>{showPasswords ? t('login.hide') : t('login.show')}</span>
                 </button>
               </div>
               <input
@@ -264,18 +449,18 @@ export default function Settings() {
                 value={pwdForm.oldPassword}
                 onChange={(e) => setPwdForm({ ...pwdForm, oldPassword: e.target.value })}
                 placeholder="••••••••"
-                className="hero-input px-3.5 py-2.5 text-xs text-zinc-900 dark:text-white font-mono"
+                className="hero-input px-3.5 py-2.5 text-sm sm:text-xs text-zinc-900 dark:text-white font-mono"
               />
             </div>
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
-                  新密码 (至少 6 位)
+                  {t('settings.newPwd')}
                 </label>
                 {pwdForm.newPassword && (
                   <span className="text-[11px] font-medium text-zinc-400">
-                    强度: <span className="text-zinc-700 dark:text-zinc-200">{passwordStrength.label}</span>
+                    {t('settings.pwdStrength', { label: passwordStrength.label })}
                   </span>
                 )}
               </div>
@@ -285,7 +470,7 @@ export default function Settings() {
                 value={pwdForm.newPassword}
                 onChange={(e) => setPwdForm({ ...pwdForm, newPassword: e.target.value })}
                 placeholder="••••••••"
-                className="hero-input px-3.5 py-2.5 text-xs text-zinc-900 dark:text-white font-mono"
+                className="hero-input px-3.5 py-2.5 text-sm sm:text-xs text-zinc-900 dark:text-white font-mono"
               />
               {pwdForm.newPassword && (
                 <div className="grid grid-cols-4 gap-1 mt-1.5">
@@ -307,7 +492,7 @@ export default function Settings() {
 
             <div>
               <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
-                确认新密码
+                {t('settings.confirmPwd')}
               </label>
               <input
                 type={showPasswords ? 'text' : 'password'}
@@ -315,53 +500,63 @@ export default function Settings() {
                 value={pwdForm.confirmPassword}
                 onChange={(e) => setPwdForm({ ...pwdForm, confirmPassword: e.target.value })}
                 placeholder="••••••••"
-                className="hero-input px-3.5 py-2.5 text-xs text-zinc-900 dark:text-white font-mono"
+                className="hero-input px-3.5 py-2.5 text-sm sm:text-xs text-zinc-900 dark:text-white font-mono"
               />
             </div>
           </div>
 
-          <button
-            type="submit"
-            disabled={pwdLoading}
-            className="hero-btn-primary px-5 py-2.5 text-xs font-semibold disabled:opacity-50"
-          >
-            {pwdLoading ? '修改中...' : '提交修改'}
-          </button>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3">
+            <button
+              type="submit"
+              disabled={pwdLoading}
+              className="hero-btn-primary px-5 py-2.5 text-xs font-semibold disabled:opacity-50 w-full sm:w-auto"
+            >
+              {pwdLoading ? t('settings.submittingPwd') : t('settings.submitPwd')}
+            </button>
+            <button
+              type="button"
+              onClick={handleLogoutAll}
+              className="hero-btn-bordered px-4 py-2.5 text-xs font-medium text-rose-600 dark:text-rose-400 gap-1.5 w-full sm:w-auto"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>{t('settings.logoutAll')}</span>
+            </button>
+          </div>
         </form>
       </motion.div>
 
-      {/* Security & Architecture Information Card */}
+      {/* Runtime Information Card */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.08 }}
-        className="hero-card p-6 space-y-4"
+        className="hero-card p-4 sm:p-6 space-y-4"
       >
         <div className="flex items-center justify-between pb-3.5 border-b border-zinc-100 dark:border-white/[0.06]">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-500" />
             <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-700 dark:text-zinc-300">
-              安全与访问策略
+              {t('settings.infoTitle')}
             </h3>
           </div>
-          <span className="text-[11px] font-mono text-zinc-400">SubDeck v0.1.1</span>
+          <span className="text-[11px] font-mono text-zinc-400">SubDeck</span>
         </div>
 
         <div className="grid sm:grid-cols-2 gap-3 text-xs">
           <div className="p-3.5 bg-zinc-50 dark:bg-white/[0.02] rounded-xl border border-zinc-200/60 dark:border-white/[0.06] flex items-center justify-between">
-            <span className="text-zinc-500 dark:text-zinc-400">认证防爆破策略</span>
-            <span className="font-mono font-medium text-zinc-800 dark:text-zinc-200">5次失败 / 锁定15m</span>
+            <span className="text-zinc-500 dark:text-zinc-400">{t('settings.infoRateLogin')}</span>
+            <span className="font-mono font-medium text-zinc-800 dark:text-zinc-200">{t('settings.infoRateLoginVal')}</span>
           </div>
           <div className="p-3.5 bg-zinc-50 dark:bg-white/[0.02] rounded-xl border border-zinc-200/60 dark:border-white/[0.06] flex items-center justify-between">
-            <span className="text-zinc-500 dark:text-zinc-400">订阅拉取限流</span>
-            <span className="font-mono font-medium text-zinc-800 dark:text-zinc-200">滑动窗口 20 req / 30s</span>
+            <span className="text-zinc-500 dark:text-zinc-400">{t('settings.infoRateSub')}</span>
+            <span className="font-mono font-medium text-zinc-800 dark:text-zinc-200">{t('settings.infoRateSubVal')}</span>
           </div>
           <div className="p-3.5 bg-zinc-50 dark:bg-white/[0.02] rounded-xl border border-zinc-200/60 dark:border-white/[0.06] flex items-center justify-between">
-            <span className="text-zinc-500 dark:text-zinc-400">自适应分发端点</span>
+            <span className="text-zinc-500 dark:text-zinc-400">{t('settings.infoEndpoint')}</span>
             <span className="font-mono font-medium text-zinc-800 dark:text-zinc-200">/s/:token</span>
           </div>
           <div className="p-3.5 bg-zinc-50 dark:bg-white/[0.02] rounded-xl border border-zinc-200/60 dark:border-white/[0.06] flex items-center justify-between">
-            <span className="text-zinc-500 dark:text-zinc-400">存储引擎与模式</span>
+            <span className="text-zinc-500 dark:text-zinc-400">{t('settings.infoStorage')}</span>
             <span className="font-mono font-medium text-zinc-800 dark:text-zinc-200">SQLite 3 (WAL)</span>
           </div>
         </div>
@@ -369,13 +564,13 @@ export default function Settings() {
 
       <ConfirmDialog
         open={!!pendingRestoreFile}
-        title="确认恢复数据库备份？"
+        title={t('settings.restoreDialogTitle')}
         description={
           pendingRestoreFile
-            ? `即将从 "${pendingRestoreFile.name}" 覆盖当前数据库，所有现存订阅与组合配置将被替换（系统会自动保留 .bak 备份）。`
+            ? t('settings.restoreDialogDesc', { name: pendingRestoreFile.name })
             : ''
         }
-        confirmText="确认恢复"
+        confirmText={t('settings.confirmRestore')}
         loading={restoreLoading}
         onConfirm={confirmRestore}
         onCancel={cancelRestore}

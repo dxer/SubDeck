@@ -2,10 +2,15 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"subdeck/internal/database"
 	"subdeck/internal/generator"
@@ -16,21 +21,80 @@ import (
 )
 
 type ExportHandler struct {
-	db *database.DB
+	db      *database.DB
+	fetcher *services.FetcherService
 }
 
-func NewExportHandler(db *database.DB) *ExportHandler {
-	return &ExportHandler{db: db}
+func NewExportHandler(db *database.DB, fetcher *services.FetcherService) *ExportHandler {
+	return &ExportHandler{db: db, fetcher: fetcher}
+}
+
+// refreshSourceUpstream refreshes the remote subscriptions actually participating
+// in the profile. It shares the caller's FetcherService so the singleflight group
+// deduplicates against admin refreshes and the scheduler. A per-subscription
+// cooldown (60s) protects upstreams from rapid repeated pulls; failures never
+// wipe the last good cache.
+func (h *ExportHandler) refreshSourceUpstream(profile *models.Profile) (refreshed, skipped, failed int) {
+	if h.fetcher == nil {
+		return 0, 0, 0
+	}
+	allSubs, err := h.db.ListSubscriptions("")
+	if err != nil {
+		return 0, 0, 0
+	}
+	subMap := make(map[string]*models.Subscription, len(allSubs))
+	for _, s := range allSubs {
+		subMap[s.ID] = s
+	}
+	subs := services.ParticipatingSubscriptions(allSubs, subMap, profile)
+
+	const refreshCooldown = 60 * time.Second
+	const maxConcurrency = 4
+	sem := make(chan struct{}, maxConcurrency)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, sub := range subs {
+		if sub == nil || sub.Type != models.SubscriptionTypeRemote {
+			continue
+		}
+		if time.Since(sub.LastAttemptAt) < refreshCooldown {
+			mu.Lock()
+			skipped++
+			mu.Unlock()
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(subID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if _, err := h.fetcher.FetchSubscription(subID); err != nil {
+				mu.Lock()
+				failed++
+				mu.Unlock()
+			} else {
+				mu.Lock()
+				refreshed++
+				mu.Unlock()
+			}
+		}(sub.ID)
+	}
+	wg.Wait()
+	return refreshed, skipped, failed
 }
 
 type landingPageData struct {
-	ProfileName  string
-	NodeCount    int
-	ProtoCounts  []protoCountItem
-	BaseURL      string
-	ClashFullURL string
-	SingboxURL   string
-	Base64URL    string
+	ProfileName        string
+	NodeCount          int
+	ProtoCounts        []protoCountItem
+	BaseURL            string
+	ClashFullURL       string
+	SingboxURL         string
+	Base64URL          string
+	ClashDownloadURL   string
+	SingboxDownloadURL string
+	Base64DownloadURL  string
 }
 
 type protoCountItem struct {
@@ -202,9 +266,9 @@ var landingPageTmpl = template.Must(template.New("landing").Parse(`<!DOCTYPE htm
 
     <div class="section-title">直接下载配置文件</div>
     <div style="display:flex; gap:0.5rem;">
-      <a href="{{.ClashFullURL}}" download class="btn" style="flex:1; justify-content:center; font-size:0.75rem;">下载 .yaml</a>
-      <a href="{{.SingboxURL}}" download class="btn" style="flex:1; justify-content:center; font-size:0.75rem;">下载 .json</a>
-      <a href="{{.Base64URL}}" download class="btn" style="flex:1; justify-content:center; font-size:0.75rem;">下载 .txt</a>
+      <a href="{{.ClashDownloadURL}}" download class="btn" style="flex:1; justify-content:center; font-size:0.75rem;">下载 .yaml</a>
+      <a href="{{.SingboxDownloadURL}}" download class="btn" style="flex:1; justify-content:center; font-size:0.75rem;">下载 .json</a>
+      <a href="{{.Base64DownloadURL}}" download class="btn" style="flex:1; justify-content:center; font-size:0.75rem;">下载 .txt</a>
     </div>
   </div>
 
@@ -257,6 +321,37 @@ func sanitizeFilename(name string) string {
 	return cleaned
 }
 
+func detectClientFormat(ua string) string {
+	switch {
+	case strings.Contains(ua, "sing-box") || strings.Contains(ua, "singbox") || strings.Contains(ua, "sbox") ||
+		strings.Contains(ua, "sfa") || strings.Contains(ua, "sfi") || strings.Contains(ua, "sfm") ||
+		strings.Contains(ua, "sft") || strings.Contains(ua, "hiddify") || strings.Contains(ua, "karing") ||
+		strings.Contains(ua, "nekobox") || strings.Contains(ua, "nekoray"):
+		return "singbox"
+	case strings.Contains(ua, "clash") || strings.Contains(ua, "mihomo") || strings.Contains(ua, "stash") ||
+		strings.Contains(ua, "verge") || strings.Contains(ua, "flclash") || strings.Contains(ua, "sparkle") ||
+		strings.Contains(ua, "koala"):
+		return "clash"
+	case strings.Contains(ua, "shadowrocket") || strings.Contains(ua, "v2ray") ||
+		strings.Contains(ua, "quantumult") || strings.Contains(ua, "loon") ||
+		strings.Contains(ua, "passwall") || strings.Contains(ua, "surfboard"):
+		return "base64"
+	default:
+		return ""
+	}
+}
+
+func computeExportETag(p *models.Profile, subs []*models.Subscription, format string, isFull bool, mirror string, nodeCount int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s|%d|%s|%t|%s|%s|%s|%d",
+		p.ID, p.UpdatedAt.UnixNano(), format, isFull, p.RulePreset, p.ExportMode, mirror, nodeCount)
+	for _, s := range subs {
+		fmt.Fprintf(&b, "|%s:%d:%d", s.ID, s.UpdatedAt.UnixNano(), s.NodeCount)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return `"` + hex.EncodeToString(sum[:12]) + `"`
+}
+
 func (h *ExportHandler) ExportSubscription(c *gin.Context) {
 	token := c.Param("token")
 	if token == "" {
@@ -270,20 +365,31 @@ func (h *ExportHandler) ExportSubscription(c *gin.Context) {
 		return
 	}
 
-	// 1 & 2. Gather and process nodes via shared aggregator service
-	nodes, upstreamUserInfo := services.AggregateProfileNodes(h.db, profile)
+	// Optional upstream refresh (?refresh=1): fetch participating remote sources
+	// first, then re-aggregate so data and ETag reflect the fresh cache.
+	if h.fetcher != nil && (c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")) {
+		refreshed, skipped, failed := h.refreshSourceUpstream(profile)
+		c.Header("X-Subdeck-Refresh", fmt.Sprintf("refreshed=%d; skipped=%d; failed=%d", refreshed, skipped, failed))
+	}
 
-	// 3. Inspect headers for auto-adaptation
+	// 1 & 2. Gather and process nodes via shared aggregator service
+	nodes, upstreamUserInfo, subs := services.AggregateProfileWithMeta(h.db, profile)
+
+	// 3. Inspect headers & query params for auto-adaptation
 	format := strings.ToLower(c.Query("format"))
 	if format == "" {
 		format = strings.ToLower(c.Query("target"))
 	}
 	ua := strings.ToLower(c.GetHeader("User-Agent"))
 	accept := strings.ToLower(c.GetHeader("Accept"))
+	isDownload := c.Query("download") == "1" || c.Query("dl") == "1"
 
-	// Check if request is a regular browser opening the URL directly without format specified
-	isBrowser := (strings.Contains(ua, "mozilla") || strings.Contains(ua, "chrome") || strings.Contains(ua, "safari") || strings.Contains(ua, "edge")) &&
-		strings.Contains(accept, "text/html") && format == ""
+	detectedFormat := detectClientFormat(ua)
+
+	// Render HTML landing page only for plain browsers (not known proxy clients) when format is unspecified
+	isBrowser := format == "" && detectedFormat == "" && !isDownload &&
+		(strings.Contains(ua, "mozilla") || strings.Contains(ua, "chrome") || strings.Contains(ua, "safari") || strings.Contains(ua, "edge")) &&
+		strings.Contains(accept, "text/html")
 
 	if isBrowser {
 		h.renderLandingPage(c, profile, nodes)
@@ -292,32 +398,67 @@ func (h *ExportHandler) ExportSubscription(c *gin.Context) {
 
 	// 4. Auto-detect format based on client User-Agent
 	if format == "" {
-		if strings.Contains(ua, "sing-box") || strings.Contains(ua, "singbox") || strings.Contains(ua, "sbox") {
-			format = "singbox"
-		} else if strings.Contains(ua, "shadowrocket") || strings.Contains(ua, "v2ray") || strings.Contains(ua, "karing") || strings.Contains(ua, "nekobox") || strings.Contains(ua, "quantumult") {
-			format = "base64"
+		if detectedFormat != "" {
+			format = detectedFormat
 		} else {
 			format = "clash"
 		}
 	}
 
-	// 5. Determine full vs provider (Default to FULL configuration out-of-the-box)
+	// 5. Determine full vs provider (honors profile.ExportMode with full out-of-the-box default)
 	exportType := strings.ToLower(c.Query("type"))
 	fullParam := c.Query("full")
-	isFull := true
+	isFull := profile.ExportMode != "provider"
 	if exportType == "provider" || exportType == "proxies" || exportType == "outbounds" || fullParam == "0" || fullParam == "false" {
 		isFull = false
 	} else if exportType == "full" || fullParam == "1" || fullParam == "true" {
 		isFull = true
 	}
 
-	// 6. Common Subscription Headers
+	sysSettings := h.db.GetSystemSettings()
+
+	// Record client pull telemetry for observability
+	_ = h.db.RecordProfilePull(profile.ID, format, c.ClientIP())
+
+	// 6. Common Subscription & Cache Headers
 	if upstreamUserInfo != "" {
 		c.Header("subscription-userinfo", upstreamUserInfo)
 	} else {
 		c.Header("subscription-userinfo", "upload=0; download=0; total=1073741824000; expire=0")
 	}
 	c.Header("profile-update-interval", "24")
+	c.Header("Cache-Control", "no-cache")
+
+	etag := computeExportETag(profile, subs, format, isFull, sysSettings.RulesetMirror, len(nodes))
+	c.Header("ETag", etag)
+	if !isDownload && c.GetHeader("If-None-Match") == etag {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
+	exportOpts := generator.ExportOptions{
+		RegionGroups:  profile.RegionGroups,
+		RulePreset:    profile.RulePreset,
+		RulesetMirror: sysSettings.RulesetMirror,
+	}
+
+	// Template overlays apply to full-config exports only (inline content wins,
+	// otherwise the cached copy of the remote template is used). Parsing happens
+	// here, never a network fetch.
+	if clashText := resolveTemplateContent(profile.ClashTemplate, profile.ClashTemplateURL, profile.ClashTemplateCache); strings.TrimSpace(clashText) != "" {
+		if m, err := generator.ParseClashTemplate(clashText); err == nil {
+			exportOpts.ClashTemplate = m
+		} else {
+			log.Printf("export: profile %s clash template parse failed, serving generated config: %v", profile.ID, err)
+		}
+	}
+	if sbText := resolveTemplateContent(profile.SingboxTemplate, profile.SingboxTemplateURL, profile.SingboxTemplateCache); strings.TrimSpace(sbText) != "" {
+		if m, err := generator.ParseSingboxTemplate(sbText); err == nil {
+			exportOpts.SingboxTemplate = m
+		} else {
+			log.Printf("export: profile %s singbox template parse failed, serving generated config: %v", profile.ID, err)
+		}
+	}
 
 	safeName := sanitizeFilename(profile.Name)
 
@@ -326,7 +467,7 @@ func (h *ExportHandler) ExportSubscription(c *gin.Context) {
 		var data []byte
 		var err error
 		if isFull {
-			data, err = generator.GenerateSingboxFullJSON(nodes, profile.Name)
+			data, err = generator.GenerateSingboxFullJSONWithConfig(nodes, profile.Name, exportOpts)
 		} else {
 			data, err = generator.GenerateSingboxOutboundsJSON(nodes)
 		}
@@ -334,21 +475,36 @@ func (h *ExportHandler) ExportSubscription(c *gin.Context) {
 			c.String(http.StatusInternalServerError, "Failed to generate Sing-box configuration: "+err.Error())
 			return
 		}
-		c.Header("Content-Type", "application/json; charset=utf-8")
-		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.json\"", safeName))
+		if isDownload {
+			c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.json\"", safeName))
+		}
 		c.Data(http.StatusOK, "application/json; charset=utf-8", data)
 
 	case "base64", "v2ray", "universal":
 		content := generator.GenerateBase64(nodes)
-		c.Header("Content-Type", "text/plain; charset=utf-8")
-		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.txt\"", safeName))
-		c.String(http.StatusOK, content)
+		if isDownload {
+			c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.txt\"", safeName))
+		}
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(content))
+
+	case "json", "nodes":
+		// Plain JSON node list for debugging/scripting: same processed nodes for
+		// full and provider modes, independent of template overrides.
+		data, err := generator.GenerateNodesJSON(nodes)
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Failed to generate node JSON: "+err.Error())
+			return
+		}
+		if isDownload {
+			c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.json\"", safeName))
+		}
+		c.Data(http.StatusOK, "application/json; charset=utf-8", data)
 
 	default: // clash, meta, mihomo
 		var data []byte
 		var err error
 		if isFull {
-			data, err = generator.GenerateClashFullYAML(nodes, profile.Name)
+			data, err = generator.GenerateClashFullYAMLWithConfig(nodes, profile.Name, exportOpts)
 		} else {
 			data, err = generator.GenerateClashProxiesYAML(nodes)
 		}
@@ -356,9 +512,12 @@ func (h *ExportHandler) ExportSubscription(c *gin.Context) {
 			c.String(http.StatusInternalServerError, "Failed to generate Clash configuration: "+err.Error())
 			return
 		}
-		c.Header("Content-Type", "text/yaml; charset=utf-8")
-		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.yaml\"", safeName))
-		c.Data(http.StatusOK, "text/yaml; charset=utf-8", data)
+		contentType := "text/plain; charset=utf-8"
+		if isDownload {
+			contentType = "text/yaml; charset=utf-8"
+			c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.yaml\"", safeName))
+		}
+		c.Data(http.StatusOK, contentType, data)
 	}
 }
 
@@ -383,14 +542,21 @@ func (h *ExportHandler) renderLandingPage(c *gin.Context, p *models.Profile, nod
 		})
 	}
 
+	clashURL := baseURL + "?format=clash&type=full"
+	singboxURL := baseURL + "?format=singbox&type=full"
+	base64URL := baseURL + "?format=base64"
+
 	data := landingPageData{
-		ProfileName:  p.Name,
-		NodeCount:    len(nodes),
-		ProtoCounts:  protoItems,
-		BaseURL:      baseURL,
-		ClashFullURL: baseURL + "?format=clash&type=full",
-		SingboxURL:   baseURL + "?format=singbox&type=full",
-		Base64URL:    baseURL + "?format=base64",
+		ProfileName:        p.Name,
+		NodeCount:          len(nodes),
+		ProtoCounts:        protoItems,
+		BaseURL:            baseURL,
+		ClashFullURL:       clashURL,
+		SingboxURL:         singboxURL,
+		Base64URL:          base64URL,
+		ClashDownloadURL:   clashURL + "&download=1",
+		SingboxDownloadURL: singboxURL + "&download=1",
+		Base64DownloadURL:  base64URL + "&download=1",
 	}
 
 	var buf bytes.Buffer

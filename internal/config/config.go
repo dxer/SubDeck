@@ -13,7 +13,7 @@ import (
 const DefaultConfigFile = "config.yaml"
 
 // Version is set at build time via -ldflags "-X subdeck/internal/config.Version=..."
-var Version = "v0.1.1"
+var Version = "v0.1.2"
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`

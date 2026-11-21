@@ -3,6 +3,8 @@ package generator
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"subdeck/internal/models"
 )
 
@@ -24,6 +26,52 @@ func buildSingboxTransport(n *models.Node) map[string]interface{} {
 		}
 	}
 	return nil
+}
+
+func buildSingboxTLS(n *models.Node, forceEnabled bool) map[string]interface{} {
+	enabled := forceEnabled || n.TLS || n.Reality != nil
+	if !enabled {
+		return nil
+	}
+	tlsMap := map[string]interface{}{
+		"enabled": true,
+	}
+	if n.SNI != "" {
+		tlsMap["server_name"] = n.SNI
+	}
+	if n.Insecure {
+		tlsMap["insecure"] = true
+	}
+	if len(n.ALPN) > 0 {
+		tlsMap["alpn"] = n.ALPN
+	}
+	if n.Fingerprint != "" {
+		tlsMap["utls"] = map[string]interface{}{
+			"enabled":     true,
+			"fingerprint": n.Fingerprint,
+		}
+	}
+	if n.Reality != nil {
+		tlsMap["reality"] = map[string]interface{}{
+			"enabled":    true,
+			"public_key": n.Reality.PublicKey,
+			"short_id":   n.Reality.ShortID,
+		}
+	}
+	return tlsMap
+}
+
+// toSingboxPortRange converts an internal mihomo-style port token
+// ("443" or "50000-51000") into sing-box's required "start:end" form.
+// sing-box rejects bare ports and dash ranges ("bad port range").
+func toSingboxPortRange(token string) string {
+	if i := strings.IndexByte(token, ':'); i >= 0 {
+		return token // already sing-box style
+	}
+	if i := strings.IndexByte(token, '-'); i >= 0 {
+		return token[:i] + ":" + token[i+1:]
+	}
+	return token + ":" + token
 }
 
 // NodeToSingboxOutbound converts internal Node to Sing-box outbound object
@@ -48,14 +96,7 @@ func NodeToSingboxOutbound(n *models.Node) map[string]interface{} {
 		ob["uuid"] = n.UUID
 		ob["alter_id"] = n.AlterId
 		ob["security"] = n.Cipher
-		if n.TLS {
-			tlsMap := map[string]interface{}{
-				"enabled":     true,
-				"server_name": n.SNI,
-			}
-			if n.Insecure {
-				tlsMap["insecure"] = true
-			}
+		if tlsMap := buildSingboxTLS(n, false); tlsMap != nil {
 			ob["tls"] = tlsMap
 		}
 		if tr := buildSingboxTransport(n); tr != nil {
@@ -68,24 +109,7 @@ func NodeToSingboxOutbound(n *models.Node) map[string]interface{} {
 		if n.Flow != "" {
 			ob["flow"] = n.Flow
 		}
-		tlsMap := map[string]interface{}{
-			"enabled": n.TLS,
-		}
-		if n.SNI != "" {
-			tlsMap["server_name"] = n.SNI
-		}
-		if n.Insecure {
-			tlsMap["insecure"] = true
-		}
-		if n.Reality != nil {
-			tlsMap["enabled"] = true
-			tlsMap["reality"] = map[string]interface{}{
-				"enabled":    true,
-				"public_key": n.Reality.PublicKey,
-				"short_id":   n.Reality.ShortID,
-			}
-		}
-		if n.TLS || n.Reality != nil {
+		if tlsMap := buildSingboxTLS(n, false); tlsMap != nil {
 			ob["tls"] = tlsMap
 		}
 		if tr := buildSingboxTransport(n); tr != nil {
@@ -95,16 +119,7 @@ func NodeToSingboxOutbound(n *models.Node) map[string]interface{} {
 	case models.TypeTrojan:
 		ob["type"] = "trojan"
 		ob["password"] = n.Password
-		tlsMap := map[string]interface{}{
-			"enabled": true,
-		}
-		if n.SNI != "" {
-			tlsMap["server_name"] = n.SNI
-		}
-		if n.Insecure {
-			tlsMap["insecure"] = true
-		}
-		ob["tls"] = tlsMap
+		ob["tls"] = buildSingboxTLS(n, true)
 		if tr := buildSingboxTransport(n); tr != nil {
 			ob["transport"] = tr
 		}
@@ -112,21 +127,23 @@ func NodeToSingboxOutbound(n *models.Node) map[string]interface{} {
 	case models.TypeHysteria2:
 		ob["type"] = "hysteria2"
 		ob["password"] = n.Password
-		tlsMap := map[string]interface{}{
-			"enabled": true,
+		ob["tls"] = buildSingboxTLS(n, true)
+		if n.Hy2Ports != "" {
+			var ports []string
+			for _, p := range strings.Split(n.Hy2Ports, ",") {
+				if trimmed := strings.TrimSpace(p); trimmed != "" {
+					ports = append(ports, toSingboxPortRange(trimmed))
+				}
+			}
+			if len(ports) > 0 {
+				ob["server_ports"] = ports
+			}
 		}
-		if n.SNI != "" {
-			tlsMap["server_name"] = n.SNI
-		}
-		if n.Insecure {
-			tlsMap["insecure"] = true
-		}
-		ob["tls"] = tlsMap
 		if n.Hy2UpMbps > 0 || n.Hy2DownMbps > 0 {
 			ob["up_mbps"] = n.Hy2UpMbps
 			ob["down_mbps"] = n.Hy2DownMbps
 		}
-		if n.Hy2Obfs != "" {
+		if n.Hy2ObfsEnabled() {
 			ob["obfs"] = map[string]interface{}{
 				"type":     n.Hy2Obfs,
 				"password": n.Hy2ObfsPassword,
@@ -136,37 +153,13 @@ func NodeToSingboxOutbound(n *models.Node) map[string]interface{} {
 	case models.TypeAnyTLS:
 		ob["type"] = "anytls"
 		ob["password"] = n.Password
-		tlsMap := map[string]interface{}{
-			"enabled": true,
-		}
-		if n.SNI != "" {
-			tlsMap["server_name"] = n.SNI
-		}
-		if n.Insecure {
-			tlsMap["insecure"] = true
-		}
-		if n.Fingerprint != "" {
-			tlsMap["utls"] = map[string]interface{}{
-				"enabled":     true,
-				"fingerprint": n.Fingerprint,
-			}
-		}
-		ob["tls"] = tlsMap
+		ob["tls"] = buildSingboxTLS(n, true)
 
 	case models.TypeTUIC:
 		ob["type"] = "tuic"
 		ob["uuid"] = n.UUID
 		ob["password"] = n.Password
-		tlsMap := map[string]interface{}{
-			"enabled": true,
-		}
-		if n.SNI != "" {
-			tlsMap["server_name"] = n.SNI
-		}
-		if n.Insecure {
-			tlsMap["insecure"] = true
-		}
-		ob["tls"] = tlsMap
+		ob["tls"] = buildSingboxTLS(n, true)
 		if n.TuicCongestion != "" {
 			ob["congestion_control"] = n.TuicCongestion
 		}
@@ -175,9 +168,14 @@ func NodeToSingboxOutbound(n *models.Node) map[string]interface{} {
 		ob["type"] = "wireguard"
 		ob["private_key"] = n.WGPrivateKey
 		ob["peer_public_key"] = n.WGPublicKey
-		ob["local_address"] = []string{n.WGLocalAddr}
+		if n.WGLocalAddr != "" {
+			ob["local_address"] = []string{n.WGLocalAddr}
+		}
 		if n.WGMTU > 0 {
 			ob["mtu"] = n.WGMTU
+		}
+		if len(n.WGReserved) > 0 {
+			ob["reserved"] = n.WGReserved
 		}
 
 	default:
@@ -199,8 +197,32 @@ func GenerateSingboxOutboundsJSON(nodes []*models.Node) ([]byte, error) {
 	return json.MarshalIndent(outbounds, "", "  ")
 }
 
-// GenerateSingboxFullJSON generates a complete sing-box configuration
+// GenerateSingboxFullJSON generates a complete sing-box 1.12+ compatible configuration
 func GenerateSingboxFullJSON(nodes []*models.Node, profileName string) ([]byte, error) {
+	return GenerateSingboxFullJSONWithConfig(nodes, profileName, ExportOptions{})
+}
+
+// GenerateSingboxFullJSONWithOptions generates a modern sing-box 1.12+ configuration
+// with rule_set routing, hijack-dns action, and optional regional urltest groups.
+func GenerateSingboxFullJSONWithOptions(nodes []*models.Node, profileName string, regionGroups bool) ([]byte, error) {
+	return GenerateSingboxFullJSONWithConfig(nodes, profileName, ExportOptions{RegionGroups: regionGroups})
+}
+
+func buildSingboxServiceSelector(tag string, regionNames, nodeTags []string) map[string]interface{} {
+	choices := make([]string, 0, 2+len(regionNames)+len(nodeTags))
+	choices = append(choices, "proxy", "auto")
+	choices = append(choices, regionNames...)
+	choices = append(choices, nodeTags...)
+	return map[string]interface{}{
+		"type":      "selector",
+		"tag":       tag,
+		"outbounds": choices,
+	}
+}
+
+// GenerateSingboxFullJSONWithConfig generates a modern sing-box 1.12+ configuration
+// supporting rule presets, optional ruleset mirror prefix, and regional urltest groups.
+func GenerateSingboxFullJSONWithConfig(nodes []*models.Node, profileName string, opts ExportOptions) ([]byte, error) {
 	var nodeTags []string
 	var proxyOutbounds []map[string]interface{}
 
@@ -216,10 +238,29 @@ func GenerateSingboxFullJSON(nodes []*models.Node, profileName string) ([]byte, 
 		nodeTags = append(nodeTags, "direct")
 	}
 
+	selectorList := []string{"auto"}
+	var regionOutbounds []map[string]interface{}
+	var regionNames []string
+	if opts.RegionGroups {
+		for _, rg := range BuildRegionGroups(nodeTags) {
+			selectorList = append(selectorList, rg.Name)
+			regionNames = append(regionNames, rg.Name)
+			regionOutbounds = append(regionOutbounds, map[string]interface{}{
+				"type":      "urltest",
+				"tag":       rg.Name,
+				"outbounds": rg.Nodes,
+				"url":       "http://www.gstatic.com/generate_204",
+				"interval":  "300s",
+			})
+		}
+	}
+	selectorList = append(selectorList, "direct")
+	selectorList = append(selectorList, nodeTags...)
+
 	selectorOutbound := map[string]interface{}{
 		"type":      "selector",
 		"tag":       "proxy",
-		"outbounds": append([]string{"auto", "direct"}, nodeTags...),
+		"outbounds": selectorList,
 	}
 
 	urltestOutbound := map[string]interface{}{
@@ -235,30 +276,120 @@ func GenerateSingboxFullJSON(nodes []*models.Node, profileName string) ([]byte, 
 		"tag":  "direct",
 	}
 
-	blockOutbound := map[string]interface{}{
-		"type": "block",
-		"tag":  "block",
-	}
-
-	dnsOutbound := map[string]interface{}{
-		"type": "dns",
-		"tag":  "dns-out",
-	}
-
+	preset := NormalizeRulePreset(opts.RulePreset)
 	allOutbounds := []map[string]interface{}{
 		selectorOutbound,
 		urltestOutbound,
-		directOutbound,
-		blockOutbound,
-		dnsOutbound,
 	}
+	if preset == RulePresetAIStreaming {
+		allOutbounds = append(allOutbounds,
+			buildSingboxServiceSelector("ai", regionNames, nodeTags),
+			buildSingboxServiceSelector("streaming", regionNames, nodeTags),
+			buildSingboxServiceSelector("telegram", regionNames, nodeTags),
+		)
+	}
+	allOutbounds = append(allOutbounds, regionOutbounds...)
+	allOutbounds = append(allOutbounds, directOutbound)
 	allOutbounds = append(allOutbounds, proxyOutbounds...)
+
+	routeRules := []map[string]interface{}{
+		{
+			"action": "sniff",
+		},
+		{
+			"protocol": "dns",
+			"action":   "hijack-dns",
+		},
+		{
+			"ip_is_private": true,
+			"outbound":      "direct",
+		},
+	}
+	if preset == RulePresetAIStreaming {
+		routeRules = append(routeRules,
+			map[string]interface{}{
+				"domain_suffix": aiDomainSuffixes,
+				"outbound":      "ai",
+			},
+			map[string]interface{}{
+				"domain_suffix": streamingDomainSuffixes,
+				"outbound":      "streaming",
+			},
+			map[string]interface{}{
+				"domain_suffix": telegramDomainSuffixes,
+				"outbound":      "telegram",
+			},
+			map[string]interface{}{
+				"ip_cidr":  telegramIPCIDRs,
+				"outbound": "telegram",
+			},
+		)
+	}
+
+	var dnsRules []map[string]interface{}
+	var ruleSets []map[string]interface{}
+	if preset != RulePresetGlobal {
+		routeRules = append(routeRules, map[string]interface{}{
+			"rule_set": []string{"geosite-cn", "geoip-cn"},
+			"outbound": "direct",
+		})
+		dnsRules = append(dnsRules, map[string]interface{}{
+			"rule_set": "geosite-cn",
+			"server":   "dns_direct",
+		})
+		ruleSets = []map[string]interface{}{
+			{
+				"tag":             "geosite-cn",
+				"type":            "remote",
+				"format":          "binary",
+				"url":             ApplyRulesetMirror("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs", opts.RulesetMirror),
+				"download_detour": "proxy",
+			},
+			{
+				"tag":             "geoip-cn",
+				"type":            "remote",
+				"format":          "binary",
+				"url":             ApplyRulesetMirror("https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs", opts.RulesetMirror),
+				"download_detour": "proxy",
+			},
+		}
+	}
+
+	routeCfg := map[string]interface{}{
+		"rules":                   routeRules,
+		"final":                   "proxy",
+		"auto_detect_interface":   true,
+		"default_domain_resolver": "dns_direct",
+	}
+	if len(ruleSets) > 0 {
+		routeCfg["rule_set"] = ruleSets
+	}
+
+	dnsCfg := map[string]interface{}{
+		"servers": []map[string]interface{}{
+			{
+				"tag":    "dns_proxy",
+				"type":   "https",
+				"server": "1.1.1.1",
+				"detour": "proxy",
+			},
+			{
+				"tag":    "dns_direct",
+				"type":   "https",
+				"server": "223.5.5.5",
+			},
+		},
+		"final": "dns_proxy",
+	}
+	if len(dnsRules) > 0 {
+		dnsCfg["rules"] = dnsRules
+	}
 
 	config := map[string]interface{}{
 		"log": map[string]interface{}{
-			"level":  "info",
-			"output": "sing-box.log",
+			"level": "info",
 		},
+		"dns": dnsCfg,
 		"inbounds": []map[string]interface{}{
 			{
 				"type":        "mixed",
@@ -268,24 +399,21 @@ func GenerateSingboxFullJSON(nodes []*models.Node, profileName string) ([]byte, 
 			},
 		},
 		"outbounds": allOutbounds,
-		"route": map[string]interface{}{
-			"rules": []map[string]interface{}{
-				{
-					"protocol": "dns",
-					"outbound": "dns-out",
-				},
-				{
-					"geoip":    []string{"private", "cn"},
-					"outbound": "direct",
-				},
-				{
-					"geosite":  []string{"cn"},
-					"outbound": "direct",
-				},
+		"route":     routeCfg,
+		// Persist downloaded rule-sets across restarts: without this, a cold
+		// start whose selected node is down fails the rule-set fetch and the
+		// whole process exits (FATAL initialize rule-set).
+		"experimental": map[string]interface{}{
+			"cache_file": map[string]interface{}{
+				"enabled": true,
 			},
-			"final":                 "proxy",
-			"auto_detect_interface": true,
 		},
+	}
+
+	if opts.SingboxTemplate != nil {
+		if err := ApplySingboxTemplate(config, opts.SingboxTemplate); err != nil {
+			return nil, err
+		}
 	}
 
 	_ = fmt.Sprintf("Profile: %s", profileName)

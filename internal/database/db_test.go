@@ -126,3 +126,46 @@ func TestSyncAdminUserWithConfig(t *testing.T) {
 		t.Fatalf("expected updated config password to take effect: %v", err)
 	}
 }
+
+func TestProfileSelectedNodesRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "profile-nodes.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	p := &models.Profile{
+		Name:            "picked",
+		SubscriptionIDs: []string{"sub-a", "sub-b"},
+		SelectedNodes:   map[string][]string{"sub-a": {"colo1-hy2", "colo1-tuic"}},
+	}
+	defer db.Close()
+	if err := db.CreateProfile(p); err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
+
+	got, err := db.GetProfileByID(p.ID)
+	if err != nil {
+		t.Fatalf("GetProfileByID failed: %v", err)
+	}
+	if len(got.SelectedNodes) != 1 {
+		t.Fatalf("SelectedNodes lost on read: %+v", got.SelectedNodes)
+	}
+	names := got.SelectedNodes["sub-a"]
+	if len(names) != 2 || names[0] != "colo1-hy2" || names[1] != "colo1-tuic" {
+		t.Fatalf("SelectedNodes[sub-a] = %v, want [colo1-hy2 colo1-tuic]", names)
+	}
+
+	// Clearing the selection persists back to "whole sources" semantics.
+	got.SelectedNodes = nil
+	if err := db.UpdateProfile(got); err != nil {
+		t.Fatalf("UpdateProfile failed: %v", err)
+	}
+	reloaded, err := db.GetProfileByID(p.ID)
+	if err != nil {
+		t.Fatalf("re-read failed: %v", err)
+	}
+	if len(reloaded.SelectedNodes) != 0 {
+		t.Fatalf("cleared SelectedNodes came back: %+v", reloaded.SelectedNodes)
+	}
+}

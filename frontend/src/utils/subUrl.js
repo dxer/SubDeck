@@ -38,7 +38,7 @@ export function getProtocolBadge(type) {
   return 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border-zinc-500/20'
 }
 
-export function formatUserInfo(raw) {
+export function formatUserInfo(raw, lang = 'zh') {
   if (!raw) return null
   const map = {}
   raw.split(';').forEach((part) => {
@@ -65,7 +65,7 @@ export function formatUserInfo(raw) {
   let expireText = null
   if (map.expire && map.expire > 0) {
     const d = new Date(map.expire * 1000)
-    expireText = d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+    expireText = d.toLocaleDateString(lang === 'en' ? 'en-US' : 'zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
   }
 
   if (!trafficText && !expireText) return null

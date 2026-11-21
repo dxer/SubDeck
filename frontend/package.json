@@ -1,7 +1,7 @@
 {
   "name": "subdeck-ui",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,8 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@heroui/react": "^3.2.7",
-    "@heroui/styles": "^3.2.7",
     "framer-motion": "^12.0.0",
     "lucide-react": "^1.16.0",
     "qrcode.react": "^4.2.0",

@@ -1,18 +1,23 @@
 import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AlertTriangle, X } from 'lucide-react'
+import { useEscapeKey } from '../hooks/useEscapeKey'
+import { useI18n } from '../i18n'
 
 export default function ConfirmDialog({
   open,
   title,
   description,
-  confirmText = '确认执行',
-  cancelText = '取消',
+  confirmText,
+  cancelText,
   variant = 'danger',
   loading = false,
   onConfirm,
   onCancel
 }) {
+  const { t } = useI18n()
+  useEscapeKey(open && !loading, onCancel)
+
   return (
     <AnimatePresence>
       {open && (
@@ -29,7 +34,7 @@ export default function ConfirmDialog({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
-            className="relative z-10 w-full max-w-sm bg-white dark:bg-[#11141b] rounded-2xl border border-zinc-200/80 dark:border-white/10 shadow-2xl p-6 space-y-4"
+            className="relative z-10 w-full max-w-sm bg-white dark:bg-[#11141b] rounded-2xl border border-zinc-200/80 dark:border-white/10 shadow-2xl p-5 sm:p-6 space-y-4"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
@@ -64,7 +69,7 @@ export default function ConfirmDialog({
                 onClick={onCancel}
                 className="hero-btn-bordered px-4 py-2 text-xs font-medium"
               >
-                {cancelText}
+                {cancelText || t('common.cancel')}
               </button>
               <button
                 type="button"
@@ -74,7 +79,7 @@ export default function ConfirmDialog({
                   variant === 'danger' ? 'hero-btn-danger' : 'hero-btn-primary'
                 } px-4 py-2 text-xs font-semibold disabled:opacity-50`}
               >
-                {loading ? '处理中...' : confirmText}
+                {loading ? t('common.processing') : (confirmText || t('common.confirm'))}
               </button>
             </div>
           </motion.div>
