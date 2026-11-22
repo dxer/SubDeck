@@ -274,14 +274,22 @@ func buildClashRules(preset string) []string {
 	}
 	rules = append(rules, "GEOIP,LAN,DIRECT,no-resolve")
 	if preset != RulePresetGlobal {
-		rules = append(rules, "GEOIP,CN,DIRECT")
+		// Domain-level CN split first (mihomo downloads geosite data on demand),
+		// then ad blocking, then the IP-level fallback.
+		rules = append(rules,
+			"GEOSITE,category-ads-all,REJECT",
+			"GEOSITE,cn,DIRECT",
+			"GEOIP,CN,DIRECT",
+		)
 	}
 	rules = append(rules, "MATCH,🚀 节点选择")
 	return rules
 }
 
-// GenerateClashFullYAMLWithConfig outputs a complete Clash / Mihomo configuration
-// with DNS defaults, optional regional url-test groups, and rule presets.
+// GenerateClashFullYAMLWithConfig outputs a complete Clash / Mihomo configuration:
+// the dynamic parts (proxies, proxy-groups, rules per preset and region groups)
+// are injected into the built-in base template, then an optional user template
+// overlays on top.
 func GenerateClashFullYAMLWithConfig(nodes []*models.Node, profileName string, opts ExportOptions) ([]byte, error) {
 	var proxies []map[string]interface{}
 	var proxyNames []string
@@ -353,39 +361,21 @@ func GenerateClashFullYAMLWithConfig(nodes []*models.Node, profileName string, o
 	groups = append(groups, proxyGroupAuto, proxyGroupFallback)
 	groups = append(groups, extraGroups...)
 
+	// Dynamic payload only — the static foundation (ports, dns, sniffer, tun,
+	// profile) comes from the built-in base template below.
 	config := map[string]interface{}{
-		"mixed-port":          7890,
-		"allow-lan":           true,
-		"mode":                "rule",
-		"log-level":           "info",
-		"external-controller": "127.0.0.1:9090",
-		"dns": map[string]interface{}{
-			"enable":        true,
-			"ipv6":          false,
-			"enhanced-mode": "fake-ip",
-			"fake-ip-range": "198.18.0.1/16",
-			"default-nameserver": []string{
-				"223.5.5.5",
-				"119.29.29.29",
-			},
-			"nameserver": []string{
-				"https://dns.alidns.com/dns-query",
-				"https://doh.pub/dns-query",
-			},
-			"fallback": []string{
-				"https://1.1.1.1/dns-query",
-				"https://dns.google/dns-query",
-			},
-			"fallback-filter": map[string]interface{}{
-				"geoip":      true,
-				"geoip-code": "CN",
-			},
-		},
 		"proxies":      proxies,
 		"proxy-groups": groups,
 		"rules":        buildClashRules(preset),
 	}
 
+	baseTmpl, err := DefaultClashTemplate()
+	if err != nil {
+		return nil, err
+	}
+	if err := ApplyClashTemplate(config, baseTmpl); err != nil {
+		return nil, err
+	}
 	if opts.ClashTemplate != nil {
 		if err := ApplyClashTemplate(config, opts.ClashTemplate); err != nil {
 			return nil, err

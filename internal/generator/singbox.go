@@ -365,51 +365,23 @@ func GenerateSingboxFullJSONWithConfig(nodes []*models.Node, profileName string,
 		routeCfg["rule_set"] = ruleSets
 	}
 
-	dnsCfg := map[string]interface{}{
-		"servers": []map[string]interface{}{
-			{
-				"tag":    "dns_proxy",
-				"type":   "https",
-				"server": "1.1.1.1",
-				"detour": "proxy",
-			},
-			{
-				"tag":    "dns_direct",
-				"type":   "https",
-				"server": "223.5.5.5",
-			},
-		},
-		"final": "dns_proxy",
-	}
-	if len(dnsRules) > 0 {
-		dnsCfg["rules"] = dnsRules
-	}
-
+	// Dynamic payload only — log, dns servers, inbounds and experimental
+	// (cache_file, clash_api) come from the built-in base template below.
 	config := map[string]interface{}{
-		"log": map[string]interface{}{
-			"level": "info",
-		},
-		"dns": dnsCfg,
-		"inbounds": []map[string]interface{}{
-			{
-				"type":        "mixed",
-				"tag":         "mixed-in",
-				"listen":      "::",
-				"listen_port": 2080,
-			},
-		},
 		"outbounds": allOutbounds,
 		"route":     routeCfg,
-		// Persist downloaded rule-sets across restarts: without this, a cold
-		// start whose selected node is down fails the rule-set fetch and the
-		// whole process exits (FATAL initialize rule-set).
-		"experimental": map[string]interface{}{
-			"cache_file": map[string]interface{}{
-				"enabled": true,
-			},
-		},
+	}
+	if len(dnsRules) > 0 {
+		config["dns"] = map[string]interface{}{"rules": dnsRules}
 	}
 
+	baseTmpl, err := DefaultSingboxTemplate()
+	if err != nil {
+		return nil, err
+	}
+	if err := ApplySingboxTemplate(config, baseTmpl); err != nil {
+		return nil, err
+	}
 	if opts.SingboxTemplate != nil {
 		if err := ApplySingboxTemplate(config, opts.SingboxTemplate); err != nil {
 			return nil, err

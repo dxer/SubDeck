@@ -369,3 +369,132 @@ func TestFullConfigWithClashTemplate(t *testing.T) {
 		t.Fatalf("generated node missing from templated output")
 	}
 }
+
+func TestClashBuiltinTemplateFoundation(t *testing.T) {
+	data, err := GenerateClashFullYAMLWithConfig(sampleNodes(), "tpl", ExportOptions{})
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("invalid YAML: %v", err)
+	}
+
+	sniffer, ok := parsed["sniffer"].(map[string]interface{})
+	if !ok || sniffer["enable"] != true {
+		t.Fatalf("expected sniffer.enable=true, got %v", parsed["sniffer"])
+	}
+	tun, ok := parsed["tun"].(map[string]interface{})
+	if !ok || tun["enable"] != false || tun["auto-route"] != true {
+		t.Fatalf("expected disabled-but-ready tun block, got %v", parsed["tun"])
+	}
+	profile, ok := parsed["profile"].(map[string]interface{})
+	if !ok || profile["store-selected"] != true {
+		t.Fatalf("expected profile.store-selected=true, got %v", parsed["profile"])
+	}
+	if parsed["tcp-concurrent"] != true || parsed["ipv6"] != false {
+		t.Fatalf("expected tcp-concurrent=true ipv6=false, got %v/%v", parsed["tcp-concurrent"], parsed["ipv6"])
+	}
+	if parsed["mixed-port"] != 7890 {
+		t.Fatalf("expected built-in mixed-port 7890, got %v", parsed["mixed-port"])
+	}
+
+	// Default preset: GEOSITE cn split and ad-block before GEOIP fallback.
+	rules, _ := parsed["rules"].([]interface{})
+	joined := make([]string, 0, len(rules))
+	for _, r := range rules {
+		s, _ := r.(string)
+		joined = append(joined, s)
+	}
+	all := strings.Join(joined, "\n")
+	if !strings.Contains(all, "GEOSITE,cn,DIRECT") || !strings.Contains(all, "GEOSITE,category-ads-all,REJECT") {
+		t.Fatalf("default preset rules must contain GEOSITE cn + ads reject, got: %v", joined)
+	}
+}
+
+func TestClashGlobalPresetSkipsCNRules(t *testing.T) {
+	data, err := GenerateClashFullYAMLWithConfig(sampleNodes(), "tpl", ExportOptions{RulePreset: RulePresetGlobal})
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+	out := string(data)
+	if strings.Contains(out, "GEOSITE,cn,DIRECT") || strings.Contains(out, "GEOIP,CN") {
+		t.Fatalf("global preset must not contain CN direct rules:\n%s", out)
+	}
+}
+
+func TestUserTemplateOverridesBuiltinBase(t *testing.T) {
+	nodes := []*models.Node{{Name: "A", Type: models.TypeShadowsocks, Server: "1.1.1.1", Port: 8388, Cipher: "aes-128-gcm", Password: "p"}}
+	tmpl, err := ParseClashTemplate("mixed-port: 9999\nsniffer:\n  enable: false\ntun:\n  enable: true\n")
+	if err != nil {
+		t.Fatalf("template parse failed: %v", err)
+	}
+	data, err := GenerateClashFullYAMLWithConfig(nodes, "tpl", ExportOptions{ClashTemplate: tmpl})
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("invalid YAML: %v", err)
+	}
+	if parsed["mixed-port"] != 9999 {
+		t.Fatalf("user template must override built-in mixed-port, got %v", parsed["mixed-port"])
+	}
+	sniffer, _ := parsed["sniffer"].(map[string]interface{})
+	if sniffer["enable"] != false {
+		t.Fatalf("user template must override built-in sniffer.enable, got %v", sniffer)
+	}
+	tun, _ := parsed["tun"].(map[string]interface{})
+	if tun["enable"] != true || tun["auto-route"] != true {
+		t.Fatalf("user template must override tun.enable while keeping built-in keys, got %v", tun)
+	}
+	// Built-in keys the user template did not touch survive.
+	prof, _ := parsed["profile"].(map[string]interface{})
+	if prof["store-selected"] != true {
+		t.Fatalf("built-in profile block must survive user overlay, got %v", prof)
+	}
+}
+
+func TestSingboxBuiltinTemplateFoundation(t *testing.T) {
+	data, err := GenerateSingboxFullJSONWithConfig(sampleNodes(), "tpl", ExportOptions{})
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	exp, ok := cfg["experimental"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing experimental block")
+	}
+	clashAPI, ok := exp["clash_api"].(map[string]interface{})
+	if !ok || clashAPI["external_controller"] != "127.0.0.1:9090" {
+		t.Fatalf("expected clash_api in experimental, got %v", exp)
+	}
+	cache, ok := exp["cache_file"].(map[string]interface{})
+	if !ok || cache["enabled"] != true {
+		t.Fatalf("expected cache_file.enabled=true, got %v", exp)
+	}
+
+	dns, _ := cfg["dns"].(map[string]interface{})
+	if dns["final"] != "dns_proxy" {
+		t.Fatalf("expected built-in dns.final=dns_proxy, got %v", dns)
+	}
+	// Preset-dependent dns rules generated in code must survive the template
+	// overlay (template has servers/final but no rules key).
+	rules, _ := dns["rules"].([]interface{})
+	if len(rules) == 0 {
+		t.Fatalf("generated dns.rules must survive built-in template overlay, dns=%v", dns)
+	}
+
+	inbounds, _ := cfg["inbounds"].([]interface{})
+	if len(inbounds) == 0 {
+		t.Fatalf("expected built-in inbounds, got %v", cfg["inbounds"])
+	}
+	route, _ := cfg["route"].(map[string]interface{})
+	if route["final"] != "proxy" {
+		t.Fatalf("expected generated route.final=proxy, got %v", route)
+	}
+}
