@@ -329,26 +329,30 @@ export default function Profiles() {
     return false
   }
 
-  const toggleSubNode = (subId, node) => {
+  const toggleSubNode = (subId, target) => {
     const nodes = subNodes[subId] || []
-    const checked = new Set(nodes.filter((n) => isNodeSelected(subId, n)).map((n) => n.name))
-    if (checked.has(node.name)) {
-      checked.delete(node.name)
-    } else {
-      checked.add(node.name)
-    }
+    if (!target || nodes.length === 0) return
+    // The backend matcher ORs name and key hits, so nodes sharing a stable key
+    // are the same proxy to it: they form one toggle unit. Keyless legacy nodes
+    // fall back to object identity.
+    const sameUnit = (n) =>
+      n === target || (!!target.selection_key && n.selection_key === target.selection_key)
+    const selectedNodes = nodes.filter((n) => {
+      const sel = isNodeSelected(subId, n)
+      return sameUnit(n) ? !sel : sel
+    })
 
     const nextSelected = { ...(form.selected_nodes || {}) }
     const nextKeys = { ...(form.selected_node_keys || {}) }
     let nextSubIds = form.subscription_ids
 
-    if (checked.size === 0) {
+    if (selectedNodes.length === 0) {
       // Nothing left: stop using this source entirely
       delete nextSelected[subId]
       delete nextKeys[subId]
       nextSubIds = form.subscription_ids.filter((id) => id !== subId)
       showToast(t('profiles.sourceClearedToast'))
-    } else if (nodes.length > 0 && checked.size === nodes.length) {
+    } else if (selectedNodes.length === nodes.length) {
       // Fully selected again: fall back to whole-source semantics so future nodes join too
       delete nextSelected[subId]
       delete nextKeys[subId]
@@ -358,9 +362,8 @@ export default function Profiles() {
       for (const n of nodes) {
         nameCounts[n.name] = (nameCounts[n.name] || 0) + 1
       }
-      const checkedNodes = nodes.filter((n) => checked.has(n.name))
-      nextSelected[subId] = [...new Set(checkedNodes.filter((n) => nameCounts[n.name] === 1).map((n) => n.name))]
-      nextKeys[subId] = checkedNodes.map((n) => n.selection_key).filter(Boolean)
+      nextSelected[subId] = [...new Set(selectedNodes.filter((n) => nameCounts[n.name] === 1).map((n) => n.name))]
+      nextKeys[subId] = [...new Set(selectedNodes.map((n) => n.selection_key).filter(Boolean))]
     }
 
     setForm({ ...form, subscription_ids: nextSubIds, selected_nodes: nextSelected, selected_node_keys: nextKeys })
