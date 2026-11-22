@@ -153,6 +153,7 @@ type Subscription struct {
 	URLs               []string         `json:"urls,omitempty"`
 	FetchProxyURL      string           `json:"fetch_proxy_url,omitempty"`
 	FailurePolicy      string           `json:"failure_policy,omitempty"` // "strict" or "skip"
+	FetchMode          string           `json:"fetch_mode,omitempty"`     // "merge" (default) or "failover"
 	RawContent         string           `json:"raw_content,omitempty"` // for local (raw URI text)
 	UserAgent          string           `json:"user_agent,omitempty"`
 	InsecureSkipVerify bool             `json:"insecure_skip_verify"`
@@ -308,6 +309,18 @@ func (s *Subscription) EffectiveURLs() []string {
 const (
 	FetchFailureStrict = "strict"
 	FetchFailureSkip   = "skip"
+
+	// FetchModeMerge fetches every configured URL and merges nodes in order.
+	FetchModeMerge = "merge"
+	// FetchModeFailover tries URLs in order and adopts the first success —
+	// for mirror domains of the same upstream account.
+	FetchModeFailover = "failover"
+)
+
+// Quota warning threshold defaults (configurable via system settings).
+const (
+	DefaultQuotaWarnDays    = 7
+	DefaultQuotaWarnPercent = 90
 )
 
 // SystemSettings stores runtime-configurable system preferences in SQLite.
@@ -315,6 +328,8 @@ type SystemSettings struct {
 	WebhookURL        string `json:"webhook_url"`
 	RulesetMirror     string `json:"ruleset_mirror"`
 	AllowPrivateFetch bool   `json:"allow_private_fetch"`
+	QuotaWarnDays     int    `json:"quota_warn_days"`
+	QuotaWarnPercent  int    `json:"quota_warn_percent"`
 }
 
 // User represents admin auth

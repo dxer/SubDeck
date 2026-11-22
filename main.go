@@ -218,6 +218,7 @@ func main() {
 
 	// 3. Initialize Fetcher & Background Scheduler
 	fetcher := services.NewFetcherService(db)
+	services.SetWebhookAllowPrivateNetwork(db.GetSystemSettings().AllowPrivateFetch)
 	scheduler := services.NewScheduler(db, fetcher)
 	scheduler.Start()
 	defer scheduler.Stop()

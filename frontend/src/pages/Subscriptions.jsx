@@ -22,7 +22,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import NodesModal from '../components/NodesModal'
 import Drawer from '../components/Drawer'
 import { CardGridSkeleton } from '../components/Skeleton'
-import { formatUserInfo, copyToClipboard } from '../utils/subUrl'
+import { formatUserInfo, quotaSeverity, copyToClipboard } from '../utils/subUrl'
 
 export default function Subscriptions() {
   const { t, lang } = useI18n()
@@ -52,7 +52,8 @@ export default function Subscriptions() {
     auto_update: true,
     interval_hours: 12,
     fetch_proxy_url: '',
-    failure_policy: 'strict'
+    failure_policy: 'strict',
+    fetch_mode: 'merge'
   })
 
   const [nodesModal, setNodesModal] = useState({ open: false, subId: '', title: '', nodes: [] })
@@ -92,6 +93,31 @@ export default function Subscriptions() {
     if (diffSec < 3600) return t('subscriptions.minsAgo', { n: Math.floor(diffSec / 60) })
     if (diffSec < 86400) return t('subscriptions.hoursAgo', { n: Math.floor(diffSec / 3600) })
     return date.toLocaleDateString(lang === 'en' ? 'en-US' : 'zh-CN', { month: '2-digit', day: '2-digit' })
+  }
+
+  // Quota health helpers: traffic bar colors and an expiry chip shown only when
+  // the plan is close to expiring (<=7d) or already expired.
+  const quotaBarColor = (sev) =>
+    sev === 'danger' ? 'bg-rose-500' : sev === 'warn' ? 'bg-amber-500' : 'bg-emerald-500'
+
+  const expiryChip = (quota) => {
+    if (!quota || quota.expire == null) return null
+    const sev = quotaSeverity(quota).expiry
+    if (sev === 'ok') return null
+    const cls =
+      sev === 'warn'
+        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+        : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+    const text = quota.expired
+      ? t('subscriptions.quotaExpired')
+      : quota.daysLeft === 0
+        ? t('subscriptions.quotaToday')
+        : t('subscriptions.quotaExpireDays', { days: quota.daysLeft })
+    return (
+      <span className={`px-1.5 py-0.5 rounded-full border text-[10px] font-mono font-semibold tabular-nums shrink-0 ${cls}`}>
+        {text}
+      </span>
+    )
   }
 
   const remoteCount = useMemo(() => subscriptions.filter((s) => s.type === 'remote').length, [subscriptions])
@@ -159,7 +185,8 @@ export default function Subscriptions() {
         auto_update: item.auto_update,
         interval_hours: item.interval_hours || 12,
         fetch_proxy_url: item.fetch_proxy_url || '',
-        failure_policy: item.failure_policy || 'strict'
+        failure_policy: item.failure_policy || 'strict',
+        fetch_mode: item.fetch_mode || 'merge'
       })
     } else {
       setIsEditing(false)
@@ -175,7 +202,8 @@ export default function Subscriptions() {
         auto_update: true,
         interval_hours: 12,
         fetch_proxy_url: '',
-        failure_policy: 'strict'
+        failure_policy: 'strict',
+        fetch_mode: 'merge'
       })
     }
     setIsDraggingFile(false)
@@ -533,7 +561,22 @@ export default function Subscriptions() {
                             </button>
                           )}
                         </div>
-                        {info && <div className="text-[10px] text-zinc-500 mt-0.5">{info.trafficText}</div>}
+                        {info && (
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span
+                              className={`text-[10px] ${
+                                quotaSeverity(info.quota).traffic === 'danger'
+                                  ? 'text-rose-600 dark:text-rose-400'
+                                  : quotaSeverity(info.quota).traffic === 'warn'
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : 'text-zinc-500'
+                              }`}
+                            >
+                              {info.trafficText}
+                            </span>
+                            {expiryChip(info.quota)}
+                          </div>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 font-mono font-bold text-zinc-900 dark:text-white tabular-nums">
                         {sub.node_count || 0}
@@ -677,10 +720,41 @@ export default function Subscriptions() {
                   </div>
 
                   {info && (
-                    <div className="px-2.5 py-1.5 rounded-lg bg-zinc-50 dark:bg-white/[0.03] border border-zinc-200/60 dark:border-white/[0.06] flex items-center justify-between gap-2 text-[11px] text-zinc-500 dark:text-zinc-400 font-mono tabular-nums">
-                      <span className="truncate">{info.trafficText || t('subscriptions.trafficUnknown')}</span>
+                    <div className="px-2.5 py-2 rounded-lg bg-zinc-50 dark:bg-white/[0.03] border border-zinc-200/60 dark:border-white/[0.06] space-y-1.5">
+                      {info.quota.total > 0 ? (
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-2 text-[11px] font-mono tabular-nums">
+                            <span className="truncate text-zinc-500 dark:text-zinc-400">{info.trafficText}</span>
+                            <span
+                              className={`shrink-0 font-semibold ${
+                                quotaSeverity(info.quota).traffic === 'danger'
+                                  ? 'text-rose-600 dark:text-rose-400'
+                                  : quotaSeverity(info.quota).traffic === 'warn'
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : 'text-zinc-500 dark:text-zinc-400'
+                              }`}
+                            >
+                              {info.quota.usedPercent}%
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-zinc-200 dark:bg-white/10 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${quotaBarColor(quotaSeverity(info.quota).traffic)}`}
+                              style={{ width: `${info.quota.usedPercent}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-[11px] font-mono text-zinc-400">{t('subscriptions.trafficUnknown')}</div>
+                      )}
                       {info.expireText && (
-                        <span className="shrink-0">{t('subscriptions.expireAt', { date: info.expireText })}</span>
+                        <div className="flex items-center justify-end gap-1.5 text-[11px] font-mono tabular-nums">
+                          {expiryChip(info.quota) || (
+                            <span className="text-zinc-500 dark:text-zinc-400">
+                              {t('subscriptions.expireAt', { date: info.expireText })}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
@@ -854,6 +928,36 @@ export default function Subscriptions() {
                 </div>
                 <p className="text-[11px] text-zinc-400 mt-1">
                   {(form.failure_policy || 'strict') === 'strict' ? t('subscriptions.policyStrictDesc') : t('subscriptions.policySkipDesc')}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
+                  {t('subscriptions.fetchModeLabel')}
+                </label>
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-100 dark:bg-white/[0.04] rounded-xl">
+                  {[
+                    { value: 'merge', label: t('subscriptions.modeMerge') },
+                    { value: 'failover', label: t('subscriptions.modeFailover') }
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, fetch_mode: opt.value }))}
+                      className={`py-2 px-2 text-xs font-bold rounded-lg transition-all ${
+                        (form.fetch_mode || 'merge') === opt.value
+                          ? 'bg-white dark:bg-[#1E2330] text-[#2563EB] dark:text-[#60A5FA] shadow-xs'
+                          : 'text-zinc-500'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-zinc-400 mt-1">
+                  {(form.fetch_mode || 'merge') === 'failover'
+                    ? t('subscriptions.modeFailoverDesc')
+                    : t('subscriptions.modeMergeDesc')}
                 </p>
               </div>
 

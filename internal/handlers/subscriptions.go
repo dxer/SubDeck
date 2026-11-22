@@ -85,6 +85,15 @@ func validateSubscriptionFetchSettings(s *models.Subscription, allowPrivate bool
 	}
 	s.FailurePolicy = policy
 
+	mode := strings.ToLower(strings.TrimSpace(s.FetchMode))
+	if mode == "" {
+		mode = models.FetchModeMerge
+	}
+	if mode != models.FetchModeMerge && mode != models.FetchModeFailover {
+		return "拉取模式仅支持 merge（合并全部链接）或 failover（镜像故障转移）", false
+	}
+	s.FetchMode = mode
+
 	if strings.TrimSpace(s.FetchProxyURL) != "" {
 		if _, err := services.ValidateProxyURL(s.FetchProxyURL, allowPrivate); err != nil {
 			return "拉取代理配置无效: " + err.Error(), false
@@ -249,6 +258,9 @@ func (h *SubscriptionHandler) Update(c *gin.Context) {
 		}
 		if has("failure_policy") {
 			existing.FailurePolicy = s.FailurePolicy
+		}
+		if has("fetch_mode") {
+			existing.FetchMode = s.FetchMode
 		}
 
 		if errMsg, ok := validateSubscriptionFetchSettings(existing, allowPrivate); !ok {

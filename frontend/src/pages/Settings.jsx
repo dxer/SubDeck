@@ -40,7 +40,9 @@ export default function Settings() {
   const [sysSettings, setSysSettings] = useState({
     webhook_url: '',
     ruleset_mirror: '',
-    allow_private_fetch: false
+    allow_private_fetch: false,
+    quota_warn_days: 7,
+    quota_warn_percent: 90
   })
   const [sysLoading, setSysLoading] = useState(false)
   const [sysTesting, setSysTesting] = useState(false)
@@ -54,7 +56,9 @@ export default function Settings() {
           setSysSettings({
             webhook_url: res.webhook_url || '',
             ruleset_mirror: res.ruleset_mirror || '',
-            allow_private_fetch: Boolean(res.allow_private_fetch)
+            allow_private_fetch: Boolean(res.allow_private_fetch),
+            quota_warn_days: res.quota_warn_days || 7,
+            quota_warn_percent: res.quota_warn_percent || 90
           })
         }
       })
@@ -376,6 +380,50 @@ export default function Settings() {
               className="w-4 h-4 rounded text-[#2563EB] focus:ring-[#2563EB] shrink-0"
             />
           </label>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            <div>
+              <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
+                {t('settings.quotaWarnDaysLabel')}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="1"
+                  max="90"
+                  value={sysSettings.quota_warn_days ?? 7}
+                  onChange={(e) =>
+                    setSysSettings((s) => ({ ...s, quota_warn_days: Math.max(1, Math.min(90, Number(e.target.value) || 1)) }))
+                  }
+                  className="hero-input px-3.5 py-2.5 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white w-24"
+                />
+                <span className="text-[11px] text-zinc-400">{t('settings.quotaWarnDaysUnit')}</span>
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-1">{t('settings.quotaWarnDaysHint')}</p>
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">
+                {t('settings.quotaWarnPercentLabel')}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="50"
+                  max="100"
+                  value={sysSettings.quota_warn_percent ?? 90}
+                  onChange={(e) =>
+                    setSysSettings((s) => ({
+                      ...s,
+                      quota_warn_percent: Math.max(50, Math.min(100, Number(e.target.value) || 50))
+                    }))
+                  }
+                  className="hero-input px-3.5 py-2.5 text-sm sm:text-xs font-mono text-zinc-900 dark:text-white w-24"
+                />
+                <span className="text-[11px] text-zinc-400">%</span>
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-1">{t('settings.quotaWarnPercentHint')}</p>
+            </div>
+          </div>
 
           <button
             type="submit"

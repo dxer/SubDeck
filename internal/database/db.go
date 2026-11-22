@@ -346,6 +346,9 @@ func (d *DB) migrate() error {
 	if err := d.ensureColumn("subscriptions", "failure_policy", "TEXT DEFAULT 'strict'"); err != nil {
 		return err
 	}
+	if err := d.ensureColumn("subscriptions", "fetch_mode", "TEXT DEFAULT 'merge'"); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -489,10 +492,22 @@ func (d *DB) GetSystemSettings() *models.SystemSettings {
 	webhook, _ := d.GetSetting("webhook_url")
 	mirror, _ := d.GetSetting("ruleset_mirror")
 	allowPrivStr, _ := d.GetSetting("allow_private_fetch")
+	warnDaysStr, _ := d.GetSetting("quota_warn_days")
+	warnDays, _ := strconv.Atoi(strings.TrimSpace(warnDaysStr))
+	if warnDays <= 0 {
+		warnDays = models.DefaultQuotaWarnDays
+	}
+	warnPercentStr, _ := d.GetSetting("quota_warn_percent")
+	warnPercent, _ := strconv.Atoi(strings.TrimSpace(warnPercentStr))
+	if warnPercent <= 0 {
+		warnPercent = models.DefaultQuotaWarnPercent
+	}
 	return &models.SystemSettings{
 		WebhookURL:        strings.TrimSpace(webhook),
 		RulesetMirror:     strings.TrimSpace(mirror),
 		AllowPrivateFetch: allowPrivStr == "true" || allowPrivStr == "1",
+		QuotaWarnDays:     warnDays,
+		QuotaWarnPercent:  warnPercent,
 	}
 }
 
@@ -511,7 +526,19 @@ func (d *DB) SaveSystemSettings(s *models.SystemSettings) error {
 	if s.AllowPrivateFetch {
 		allowVal = "1"
 	}
-	return d.SetSetting("allow_private_fetch", allowVal)
+	if err := d.SetSetting("allow_private_fetch", allowVal); err != nil {
+		return err
+	}
+	if s.QuotaWarnDays <= 0 {
+		s.QuotaWarnDays = models.DefaultQuotaWarnDays
+	}
+	if s.QuotaWarnPercent <= 0 {
+		s.QuotaWarnPercent = models.DefaultQuotaWarnPercent
+	}
+	if err := d.SetSetting("quota_warn_days", strconv.Itoa(s.QuotaWarnDays)); err != nil {
+		return err
+	}
+	return d.SetSetting("quota_warn_percent", strconv.Itoa(s.QuotaWarnPercent))
 }
 
 // User methods
@@ -540,14 +567,14 @@ func (d *DB) UpdatePassword(username, newPassword string) error {
 	return err
 }
 
-const subscriptionSelectCols = "id, name, type, url, COALESCE(urls_json, '[]'), COALESCE(fetch_proxy_url, ''), COALESCE(failure_policy, 'strict'), raw_content, user_agent, insecure_skip_verify, auto_update, interval_hours, node_count, COALESCE(user_info, ''), last_updated, last_attempt_at, COALESCE(consecutive_failures, 0), status, COALESCE(error_msg, ''), COALESCE(cached_nodes_json, ''), created_at, updated_at"
+const subscriptionSelectCols = "id, name, type, url, COALESCE(urls_json, '[]'), COALESCE(fetch_proxy_url, ''), COALESCE(failure_policy, 'strict'), COALESCE(fetch_mode, 'merge'), raw_content, user_agent, insecure_skip_verify, auto_update, interval_hours, node_count, COALESCE(user_info, ''), last_updated, last_attempt_at, COALESCE(consecutive_failures, 0), status, COALESCE(error_msg, ''), COALESCE(cached_nodes_json, ''), created_at, updated_at"
 
 func scanSubscription(s rowScanner) (*models.Subscription, error) {
 	var sub models.Subscription
 	var cachedJSON, urlsJSON string
 	var lastAttemptAt sql.NullTime
 	err := s.Scan(
-		&sub.ID, &sub.Name, &sub.Type, &sub.URL, &urlsJSON, &sub.FetchProxyURL, &sub.FailurePolicy,
+		&sub.ID, &sub.Name, &sub.Type, &sub.URL, &urlsJSON, &sub.FetchProxyURL, &sub.FailurePolicy, &sub.FetchMode,
 		&sub.RawContent, &sub.UserAgent,
 		&sub.InsecureSkipVerify, &sub.AutoUpdate, &sub.IntervalHours, &sub.NodeCount,
 		&sub.UserInfo, &sub.LastUpdated, &lastAttemptAt, &sub.ConsecutiveFailures,
@@ -639,13 +666,16 @@ func (d *DB) CreateSubscription(s *models.Subscription) error {
 	if strings.TrimSpace(s.FailurePolicy) == "" {
 		s.FailurePolicy = models.FetchFailureStrict
 	}
+	if strings.TrimSpace(s.FetchMode) == "" {
+		s.FetchMode = models.FetchModeMerge
+	}
 	cachedJSON, _ := json.Marshal(s.CachedNodes)
 	urlsJSON, _ := json.Marshal(s.URLs)
 
 	_, err := d.db.Exec(
-		`INSERT INTO subscriptions (id, name, type, url, urls_json, fetch_proxy_url, failure_policy, raw_content, user_agent, insecure_skip_verify, auto_update, interval_hours, node_count, user_info, last_updated, last_attempt_at, consecutive_failures, status, error_msg, cached_nodes_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.Name, string(s.Type), s.URL, string(urlsJSON), s.FetchProxyURL, s.FailurePolicy, s.RawContent, s.UserAgent, s.InsecureSkipVerify,
+		`INSERT INTO subscriptions (id, name, type, url, urls_json, fetch_proxy_url, failure_policy, fetch_mode, raw_content, user_agent, insecure_skip_verify, auto_update, interval_hours, node_count, user_info, last_updated, last_attempt_at, consecutive_failures, status, error_msg, cached_nodes_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.Name, string(s.Type), s.URL, string(urlsJSON), s.FetchProxyURL, s.FailurePolicy, s.FetchMode, s.RawContent, s.UserAgent, s.InsecureSkipVerify,
 		s.AutoUpdate, s.IntervalHours, s.NodeCount, s.UserInfo, s.LastUpdated, s.LastAttemptAt,
 		s.ConsecutiveFailures, s.Status, s.ErrorMsg, string(cachedJSON), s.CreatedAt, s.UpdatedAt,
 	)
@@ -663,11 +693,14 @@ func (d *DB) UpdateSubscription(s *models.Subscription) error {
 	if strings.TrimSpace(s.FailurePolicy) == "" {
 		s.FailurePolicy = models.FetchFailureStrict
 	}
+	if strings.TrimSpace(s.FetchMode) == "" {
+		s.FetchMode = models.FetchModeMerge
+	}
 	cachedJSON, _ := json.Marshal(s.CachedNodes)
 	urlsJSON, _ := json.Marshal(s.URLs)
 	_, err := d.db.Exec(
-		`UPDATE subscriptions SET name = ?, type = ?, url = ?, urls_json = ?, fetch_proxy_url = ?, failure_policy = ?, raw_content = ?, user_agent = ?, insecure_skip_verify = ?, auto_update = ?, interval_hours = ?, node_count = ?, user_info = ?, last_updated = ?, last_attempt_at = ?, consecutive_failures = ?, status = ?, error_msg = ?, cached_nodes_json = ?, updated_at = ? WHERE id = ?`,
-		s.Name, string(s.Type), s.URL, string(urlsJSON), s.FetchProxyURL, s.FailurePolicy, s.RawContent, s.UserAgent, s.InsecureSkipVerify,
+		`UPDATE subscriptions SET name = ?, type = ?, url = ?, urls_json = ?, fetch_proxy_url = ?, failure_policy = ?, fetch_mode = ?, raw_content = ?, user_agent = ?, insecure_skip_verify = ?, auto_update = ?, interval_hours = ?, node_count = ?, user_info = ?, last_updated = ?, last_attempt_at = ?, consecutive_failures = ?, status = ?, error_msg = ?, cached_nodes_json = ?, updated_at = ? WHERE id = ?`,
+		s.Name, string(s.Type), s.URL, string(urlsJSON), s.FetchProxyURL, s.FailurePolicy, s.FetchMode, s.RawContent, s.UserAgent, s.InsecureSkipVerify,
 		s.AutoUpdate, s.IntervalHours, s.NodeCount, s.UserInfo, s.LastUpdated, s.LastAttemptAt,
 		s.ConsecutiveFailures, s.Status, s.ErrorMsg, string(cachedJSON), s.UpdatedAt, s.ID,
 	)

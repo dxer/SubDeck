@@ -1,7 +1,9 @@
 package services
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,11 +30,13 @@ func (s *Scheduler) Start() {
 	go func() {
 		time.Sleep(15 * time.Second)
 		s.checkAndUpdate()
+		s.checkQuotaWarnings()
 
 		for {
 			select {
 			case <-ticker.C:
 				s.checkAndUpdate()
+				s.checkQuotaWarnings()
 			case <-s.stopCh:
 				ticker.Stop()
 				return
@@ -132,4 +136,62 @@ func (s *Scheduler) checkAndUpdate() {
 		}()
 	}
 	wg.Wait()
+}
+
+// checkQuotaWarnings inspects every remote subscription's quota header and sends
+// at most one expiry/traffic warning per subscription per day when the expiry is
+// within the configured day threshold or usage exceeds the percent threshold.
+func (s *Scheduler) checkQuotaWarnings() {
+	settings := s.db.GetSystemSettings()
+	if settings == nil || settings.WebhookURL == "" {
+		return
+	}
+	subs, err := s.db.ListSubscriptions(string(models.SubscriptionTypeRemote))
+	if err != nil {
+		log.Printf("[Scheduler] Error listing subscriptions for quota check: %v\n", err)
+		return
+	}
+
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	for _, sub := range subs {
+		upload, download, total, expire, ok := parseUserInfo(sub.UserInfo)
+		if !ok {
+			continue
+		}
+		var reasons []string
+		if expire > 0 {
+			expiry := time.Unix(expire, 0)
+			if !expiry.After(now) {
+				reasons = append(reasons, fmt.Sprintf("套餐已过期（%s）", expiry.Format("2006-01-02")))
+			} else if days := int(expiry.Sub(now).Hours() / 24); days <= settings.QuotaWarnDays {
+				reasons = append(reasons, fmt.Sprintf("套餐将于 %d 天后到期（%s）", days, expiry.Format("2006-01-02")))
+			}
+		}
+		if total > 0 {
+			usedPercent := (upload + download) * 100 / total
+			if usedPercent >= int64(settings.QuotaWarnPercent) {
+				reasons = append(reasons, fmt.Sprintf("流量已用 %.1f GB / %.1f GB（%d%%）",
+					float64(upload+download)/(1<<30), float64(total)/(1<<30), usedPercent))
+			}
+		}
+		if len(reasons) == 0 {
+			continue
+		}
+
+		// Daily dedup: at most one combined warning per subscription per day.
+		key := "quota_warn_last_" + sub.ID
+		if last, err := s.db.GetSetting(key); err == nil && last == today {
+			continue
+		}
+		if err := s.db.SetSetting(key, today); err != nil {
+			continue
+		}
+		log.Printf("[Scheduler] Quota warning for '%s': %s\n", sub.Name, strings.Join(reasons, "；"))
+		title := fmt.Sprintf("SubDeck 套餐预警: %s", sub.Name)
+		msg := fmt.Sprintf("订阅 [%s] %s。请及时续费或更换订阅源。", sub.Name, strings.Join(reasons, "；"))
+		go func(url, t, m string) {
+			_ = SendWebhookNotification(url, "subscription_quota_warning", t, m)
+		}(settings.WebhookURL, title, msg)
+	}
 }

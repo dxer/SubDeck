@@ -1,6 +1,8 @@
 package services
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -381,5 +383,275 @@ func TestValidateProxyURLRules(t *testing.T) {
 	}
 	if _, err := ValidateProxyURL("ftp://proxy.example.com", false); err == nil {
 		t.Fatalf("unsupported scheme must fail")
+	}
+}
+
+func setupFailoverSub(t *testing.T, db *database.DB) (*models.Subscription, *atomic.Bool, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
+	var firstFail atomic.Bool
+	var firstHits, secondHits atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstHits.Add(1)
+		if firstFail.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("ss://YWVzLTI1Ni1nY206cGFzc3dvcmRAMTI3LjAuMC4xOjEwODAx#MIRROR-A"))
+	}))
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits.Add(1)
+		_, _ = w.Write([]byte("ss://YWVzLTI1Ni1nY206cGFzc3dvcmRAMTI3LjAuMC4xOjEwODAy#MIRROR-B"))
+	}))
+	t.Cleanup(func() { first.Close(); second.Close() })
+
+	sub := &models.Subscription{
+		Name:          "FailoverSub",
+		Type:          models.SubscriptionTypeRemote,
+		URLs:          []string{first.URL, second.URL},
+		FetchMode:     models.FetchModeFailover,
+		FailurePolicy: models.FetchFailureStrict,
+		Status:        "pending",
+	}
+	if err := db.CreateSubscription(sub); err != nil {
+		t.Fatalf("CreateSubscription failed: %v", err)
+	}
+	return sub, &firstFail, &firstHits, &secondHits
+}
+
+func TestFetchModeFailoverAdoptsFirstSuccess(t *testing.T) {
+	db := setupFetcherTestDB(t)
+	sub, _, firstHits, secondHits := setupFailoverSub(t, db)
+
+	fetcher := NewFetcherService(db)
+	fetcher.AllowPrivateNetwork = true
+	nodes, err := fetcher.FetchSubscription(sub.ID)
+	if err != nil {
+		t.Fatalf("failover fetch failed: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].Name != "MIRROR-A" {
+		t.Fatalf("failover must adopt only the first successful mirror, got %+v", nodes)
+	}
+	if firstHits.Load() != 1 || secondHits.Load() != 0 {
+		t.Fatalf("failover must stop after first success, hits first=%d second=%d", firstHits.Load(), secondHits.Load())
+	}
+	after, _ := db.GetSubscription(sub.ID)
+	if after.Status != "ok" {
+		t.Fatalf("failover success status must be ok, got %s", after.Status)
+	}
+}
+
+func TestFetchModeFailoverSkipsFailingMirror(t *testing.T) {
+	db := setupFetcherTestDB(t)
+	sub, firstFail, firstHits, secondHits := setupFailoverSub(t, db)
+
+	fetcher := NewFetcherService(db)
+	fetcher.AllowPrivateNetwork = true
+	firstFail.Store(true)
+
+	nodes, err := fetcher.FetchSubscription(sub.ID)
+	if err != nil {
+		t.Fatalf("failover should fall back to the second mirror: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].Name != "MIRROR-B" {
+		t.Fatalf("expected second mirror nodes, got %+v", nodes)
+	}
+	if firstHits.Load() != 1 || secondHits.Load() != 1 {
+		t.Fatalf("each mirror tried once, hits first=%d second=%d", firstHits.Load(), secondHits.Load())
+	}
+	after, _ := db.GetSubscription(sub.ID)
+	if after.Status != "ok" || after.ConsecutiveFailures != 0 {
+		t.Fatalf("expected clean success, got status=%s failures=%d", after.Status, after.ConsecutiveFailures)
+	}
+}
+
+func TestFetchModeFailoverAllMirrorsFailPreservesCache(t *testing.T) {
+	db := setupFetcherTestDB(t)
+	sub, firstFail, _, _ := setupFailoverSub(t, db)
+
+	fetcher := NewFetcherService(db)
+	fetcher.AllowPrivateNetwork = true
+	if _, err := fetcher.FetchSubscription(sub.ID); err != nil {
+		t.Fatalf("initial fetch failed: %v", err)
+	}
+	firstFail.Store(true)
+	// Break the second mirror by pointing the sub at an unresolvable host.
+	// Re-read from DB so the cached nodes survive the row update.
+	fresh, err := db.GetSubscription(sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription failed: %v", err)
+	}
+	deadURL := strings.Replace(sub.URLs[1], "127.0.0.1:", "127.0.0.1.1:", 1)
+	fresh.URLs = []string{sub.URLs[0], deadURL}
+	if err := db.UpdateSubscription(fresh); err != nil {
+		t.Fatalf("UpdateSubscription failed: %v", err)
+	}
+
+	if _, err := fetcher.FetchSubscription(sub.ID); err == nil || !strings.Contains(err.Error(), "mirror URL(s) failed") {
+		t.Fatalf("expected all-mirrors-failed error, got %v", err)
+	}
+	after, _ := db.GetSubscription(sub.ID)
+	if after.Status != "error" || after.NodeCount != 1 {
+		t.Fatalf("all-fail must keep cache and mark error, got status=%s count=%d", after.Status, after.NodeCount)
+	}
+}
+
+// webhookRecorder captures webhook events with their payload fields.
+type webhookRecorder struct {
+	srv    *httptest.Server
+	events chan map[string]string
+}
+
+func newWebhookRecorder(t *testing.T) *webhookRecorder {
+	t.Helper()
+	rec := &webhookRecorder{events: make(chan map[string]string, 16)}
+	rec.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		ev := map[string]string{}
+		for k, v := range payload {
+			if s, ok := v.(string); ok {
+				ev[k] = s
+			}
+		}
+		select {
+		case rec.events <- ev:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(func() { rec.srv.Close() })
+	return rec
+}
+
+// waitForEvent polls the recorder channel for an event type within the timeout.
+func (rec *webhookRecorder) waitForEvent(t *testing.T, event string) map[string]string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case ev := <-rec.events:
+			if ev["event"] == event {
+				return ev
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	t.Fatalf("timed out waiting for webhook event %q", event)
+	return nil
+}
+
+func TestFetchAlertAndRecoveryNotifications(t *testing.T) {
+	db := setupFetcherTestDB(t)
+	rec := newWebhookRecorder(t)
+	if err := db.SetSetting("webhook_url", rec.srv.URL); err != nil {
+		t.Fatalf("SetSetting failed: %v", err)
+	}
+	SetWebhookAllowPrivateNetwork(true)
+	t.Cleanup(func() { SetWebhookAllowPrivateNetwork(false) })
+
+	var upstreamFail atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamFail.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("ss://YWVzLTI1Ni1nY206cGFzc3dvcmRAMTI3LjAuMC4xOjEwODAz#RECOVER-1"))
+	}))
+	defer srv.Close()
+
+	sub := &models.Subscription{
+		Name:   "NotifySub",
+		Type:   models.SubscriptionTypeRemote,
+		URL:    srv.URL,
+		Status: "pending",
+	}
+	if err := db.CreateSubscription(sub); err != nil {
+		t.Fatalf("CreateSubscription failed: %v", err)
+	}
+
+	fetcher := NewFetcherService(db)
+	fetcher.AllowPrivateNetwork = true
+
+	// Three consecutive failures: alert fires on the 3rd only.
+	upstreamFail.Store(true)
+	for i := 0; i < 3; i++ {
+		if _, err := fetcher.FetchSubscription(sub.ID); err == nil {
+			t.Fatalf("fetch %d should fail", i+1)
+		}
+	}
+	alert := rec.waitForEvent(t, "subscription_fetch_failed")
+	if !strings.Contains(alert["message"], "连续 3 次") {
+		t.Fatalf("alert should report 3 consecutive failures, got %q", alert["message"])
+	}
+
+	// Recovery after the alerting state must notify once.
+	upstreamFail.Store(false)
+	if _, err := fetcher.FetchSubscription(sub.ID); err != nil {
+		t.Fatalf("recovery fetch failed: %v", err)
+	}
+	recovered := rec.waitForEvent(t, "subscription_recovered")
+	if !strings.Contains(recovered["message"], "已恢复正常") {
+		t.Fatalf("recovery message unexpected: %q", recovered["message"])
+	}
+
+	after, _ := db.GetSubscription(sub.ID)
+	if after.Status != "ok" || after.ConsecutiveFailures != 0 {
+		t.Fatalf("expected clean state after recovery, got status=%s failures=%d", after.Status, after.ConsecutiveFailures)
+	}
+}
+
+func TestSchedulerQuotaWarningDailyDedup(t *testing.T) {
+	db := setupFetcherTestDB(t)
+	rec := newWebhookRecorder(t)
+	if err := db.SetSetting("webhook_url", rec.srv.URL); err != nil {
+		t.Fatalf("SetSetting failed: %v", err)
+	}
+	SetWebhookAllowPrivateNetwork(true)
+	t.Cleanup(func() { SetWebhookAllowPrivateNetwork(false) })
+
+	// Expiry 71h out truncates to "2 days left" — below the default 7-day bar.
+	// Usage 100% of total: upload 10 GiB + download 10 GiB / total 20 GiB.
+	expiringSoon := time.Now().Add(71 * time.Hour).Unix()
+	warnSub := &models.Subscription{
+		Name:          "QuotaWarnSub",
+		Type:          models.SubscriptionTypeRemote,
+		URL:           "http://example.invalid/sub",
+		Status:        "ok",
+		AutoUpdate:    false,
+		UserInfo:      fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", 10<<30, 10<<30, 20<<30, expiringSoon),
+		LastUpdated:   time.Now(),
+		LastAttemptAt: time.Now(),
+	}
+	if err := db.CreateSubscription(warnSub); err != nil {
+		t.Fatalf("CreateSubscription failed: %v", err)
+	}
+	healthySub := &models.Subscription{
+		Name:          "HealthySub",
+		Type:          models.SubscriptionTypeRemote,
+		URL:           "http://example.invalid/sub",
+		Status:        "ok",
+		AutoUpdate:    false,
+		UserInfo:      "upload=0; download=0; total=107374182400; expire=1893456000",
+		LastUpdated:   time.Now(),
+		LastAttemptAt: time.Now(),
+	}
+	if err := db.CreateSubscription(healthySub); err != nil {
+		t.Fatalf("CreateSubscription failed: %v", err)
+	}
+
+	sched := NewScheduler(db, NewFetcherService(db))
+	sched.checkQuotaWarnings()
+
+	ev := rec.waitForEvent(t, "subscription_quota_warning")
+	if !strings.Contains(ev["message"], "2 天后到期") || !strings.Contains(ev["message"], "100%") {
+		t.Fatalf("warning should mention expiry and usage, got %q", ev["message"])
+	}
+
+	// Second run on the same day must not re-alert (daily dedup).
+	sched.checkQuotaWarnings()
+	select {
+	case extra := <-rec.events:
+		t.Fatalf("quota warning must fire once per day, got extra event %+v", extra)
+	case <-time.After(300 * time.Millisecond):
 	}
 }

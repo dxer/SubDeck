@@ -117,11 +117,20 @@ func (h *SystemHandler) UpdateSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "规则集镜像前缀必须为合法的 http:// 或 https:// 链接"})
 		return
 	}
+	if req.QuotaWarnDays < 1 || req.QuotaWarnDays > 90 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "套餐到期预警天数需在 1-90 之间"})
+		return
+	}
+	if req.QuotaWarnPercent < 50 || req.QuotaWarnPercent > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "流量预警百分比需在 50-100 之间"})
+		return
+	}
 
 	if err := h.db.SaveSystemSettings(&req); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存系统配置失败: " + err.Error()})
 		return
 	}
+	services.SetWebhookAllowPrivateNetwork(req.AllowPrivateFetch)
 	c.JSON(http.StatusOK, gin.H{
 		"message":  "系统配置已保存",
 		"settings": h.db.GetSystemSettings(),

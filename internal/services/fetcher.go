@@ -20,6 +20,10 @@ import (
 
 const maxSubscriptionBodyBytes = 10 << 20 // 10 MiB
 
+// fetchAlertThreshold is the consecutive-failure count that triggers a fetch
+// alert (and again every 12th failure); recovery notices use the same bar.
+const fetchAlertThreshold = 3
+
 type inflightFetch struct {
 	done  chan struct{}
 	nodes []*models.Node
@@ -117,7 +121,7 @@ func (s *FetcherService) recordFetchError(sub *models.Subscription, errMsg strin
 		return
 	}
 	// Trigger alert on the 3rd consecutive failure and periodically thereafter to avoid alert storms
-	if failures == 3 || (failures > 3 && failures%12 == 0) {
+	if failures == fetchAlertThreshold || (failures > fetchAlertThreshold && failures%12 == 0) {
 		settings := s.db.GetSystemSettings()
 		if settings != nil && settings.WebhookURL != "" {
 			title := fmt.Sprintf("SubDeck 订阅拉取告警: %s", sub.Name)
@@ -128,6 +132,21 @@ func (s *FetcherService) recordFetchError(sub *models.Subscription, errMsg strin
 			}(settings.WebhookURL, title, msg)
 		}
 	}
+}
+
+// notifyRecovered sends a one-shot webhook when a subscription that had been
+// alerting (>= fetchAlertThreshold consecutive failures) succeeds again.
+func (s *FetcherService) notifyRecovered(sub *models.Subscription, nodeCount int) {
+	settings := s.db.GetSystemSettings()
+	if settings == nil || settings.WebhookURL == "" {
+		return
+	}
+	title := fmt.Sprintf("SubDeck 订阅已恢复: %s", sub.Name)
+	msg := fmt.Sprintf("远程订阅 [%s] 在连续 %d 次失败后拉取成功，已恢复正常 (%d 节点)。",
+		sub.Name, sub.ConsecutiveFailures, nodeCount)
+	go func(url, t, m string) {
+		_ = SendWebhookNotification(url, "subscription_recovered", t, m)
+	}(settings.WebhookURL, title, msg)
 }
 
 // FetchSubscription pulls content from the subscription URL (for remote) or parses RawContent (for local).
@@ -194,6 +213,10 @@ func (s *FetcherService) fetchSubscriptionOnce(subID string) ([]*models.Node, er
 	if err != nil {
 		s.recordFetchError(sub, err.Error())
 		return nil, err
+	}
+
+	if strings.EqualFold(strings.TrimSpace(sub.FetchMode), models.FetchModeFailover) {
+		return s.fetchFailover(sub, urls, client)
 	}
 
 	type urlResult struct {
@@ -267,11 +290,39 @@ func (s *FetcherService) fetchSubscriptionOnce(subID string) ([]*models.Node, er
 	// A single quota header cannot describe several unrelated accounts; for
 	// multi-URL sources adopt the first successful header, never sum duplicates.
 	clearUserInfo := len(urls) > 1 && firstUserInfo == ""
+	if sub.ConsecutiveFailures >= fetchAlertThreshold {
+		s.notifyRecovered(sub, len(combined))
+	}
 	if err := s.db.UpdateSubscriptionCacheWithOptions(sub.ID, combined, status, errMsg, firstUserInfo, clearUserInfo); err != nil {
 		return nil, fmt.Errorf("failed to save cache: %w", err)
 	}
 
 	return combined, nil
+}
+
+// fetchFailover tries the configured URLs sequentially and adopts the first
+// success — meant for mirror domains serving the same upstream account, where
+// merging would duplicate nodes and strict/skip semantics don't apply. The
+// winning URL's nodes and quota header are committed with status "ok"; when
+// every URL fails the last valid cache is kept, matching the single-URL path.
+func (s *FetcherService) fetchFailover(sub *models.Subscription, urls []string, client *http.Client) ([]*models.Node, error) {
+	var failures []string
+	for i, rawURL := range urls {
+		nodes, userInfo, err := s.fetchRemoteURL(sub, rawURL, client)
+		if err == nil {
+			if sub.ConsecutiveFailures >= fetchAlertThreshold {
+				s.notifyRecovered(sub, len(nodes))
+			}
+			if err := s.db.UpdateSubscriptionCacheWithOptions(sub.ID, nodes, "ok", "", userInfo, false); err != nil {
+				return nil, fmt.Errorf("failed to save cache: %w", err)
+			}
+			return nodes, nil
+		}
+		failures = append(failures, fmt.Sprintf("URL#%d: %s", i+1, err.Error()))
+	}
+	errMsg := fmt.Sprintf("all %d mirror URL(s) failed: %s", len(urls), strings.Join(failures, "; "))
+	s.recordFetchError(sub, errMsg)
+	return nil, errors.New(errMsg)
 }
 
 // fetchRemoteURL fetches and parses one remote subscription URL. It returns the

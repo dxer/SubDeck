@@ -13,7 +13,8 @@ import {
   ArrowRight,
   CheckCircle2,
   FileCode2,
-  AlertTriangle
+  AlertTriangle,
+  HeartPulse
 } from 'lucide-react'
 import { api } from '../api'
 import { useI18n } from '../i18n'
@@ -21,7 +22,7 @@ import { Toast, useToast } from '../components/Toast'
 import QrModal from '../components/QrModal'
 import ConfigPreviewDrawer from '../components/ConfigPreviewDrawer'
 import { MetricSkeleton, RowListSkeleton } from '../components/Skeleton'
-import { getUniversalUrl, getExportUrl, copyToClipboard } from '../utils/subUrl'
+import { getUniversalUrl, getExportUrl, copyToClipboard, formatUserInfo, quotaSeverity } from '../utils/subUrl'
 
 const PROTO_COLORS = {
   vless: 'bg-emerald-500',
@@ -36,7 +37,7 @@ const PROTO_COLORS = {
 }
 
 export default function Dashboard() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [stats, setStats] = useState({
     total_sub_count: 0,
     remote_sub_count: 0,
@@ -104,6 +105,30 @@ export default function Dashboard() {
   const errorSubCount = useMemo(
     () => subscriptions.filter((s) => s.status === 'error').length,
     [subscriptions]
+  )
+
+  // Subscription quota health: only sources that report a quota header, sorted
+  // so expiring/exhausted plans surface first.
+  const quotaRows = useMemo(() => {
+    const rank = { expired: 0, danger: 0, warn: 1, ok: 2 }
+    return subscriptions
+      .map((sub) => {
+        const info = formatUserInfo(sub.user_info, lang)
+        if (!info || !info.quota) return null
+        const sev = quotaSeverity(info.quota)
+        const worst = Math.min(
+          ...(sev.traffic ? [rank[sev.traffic]] : [3]),
+          ...(sev.expiry ? [rank[sev.expiry]] : [3])
+        )
+        return { sub, quota: info.quota, sev, trafficText: info.trafficText, expireText: info.expireText, worst }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.worst - b.worst || (a.quota.daysLeft ?? 999) - (b.quota.daysLeft ?? 999))
+  }, [subscriptions, lang])
+
+  const quotaWarnCount = useMemo(
+    () => quotaRows.filter((r) => r.worst <= 1).length,
+    [quotaRows]
   )
 
   const protocolBreakdown = useMemo(() => {
@@ -281,6 +306,85 @@ export default function Dashboard() {
             </div>
           </div>
         </motion.div>
+      )}
+
+      {/* Subscription Health Panel */}
+      {quotaRows.length > 0 && (
+        <div className="hero-card overflow-visible">
+          <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-zinc-100 dark:border-white/[0.06] flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <HeartPulse className="w-4 h-4 text-[#2563EB] dark:text-[#60A5FA]" />
+              <h2 className="text-sm font-bold text-zinc-900 dark:text-white">{t('dashboard.healthTitle')}</h2>
+              <span className="hero-chip-default text-xs font-medium tabular-nums">{quotaRows.length}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {quotaWarnCount > 0 ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 text-[11px] font-semibold text-rose-600 dark:text-rose-400 tabular-nums">
+                  <AlertTriangle className="w-3 h-3" />
+                  {t('dashboard.healthWarnCount', { count: quotaWarnCount })}
+                </span>
+              ) : (
+                <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                  {t('dashboard.healthAllGood')}
+                </span>
+              )}
+              <Link to="/subscriptions" className="text-[#2563EB] dark:text-[#60A5FA] font-semibold hover:underline text-xs">
+                {t('common.manage')}
+              </Link>
+            </div>
+          </div>
+          <div className="p-3 sm:p-4 space-y-2.5">
+            {quotaRows.slice(0, 6).map(({ sub, quota, sev, trafficText, expireText }) => (
+              <div key={sub.id} className="flex items-center gap-3">
+                <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200 truncate w-28 sm:w-40 shrink-0" title={sub.name}>
+                  {sub.name}
+                </span>
+                <div className="flex-1 min-w-0 space-y-1">
+                  {quota.total > 0 ? (
+                    <>
+                      <div className="flex items-center justify-between gap-2 text-[11px] font-mono tabular-nums">
+                        <span className="truncate text-zinc-500 dark:text-zinc-400">{trafficText}</span>
+                        {expireText && (
+                          <span
+                            className={`shrink-0 font-semibold ${
+                              sev.expiry === 'expired' || sev.expiry === 'danger'
+                                ? 'text-rose-600 dark:text-rose-400'
+                                : sev.expiry === 'warn'
+                                  ? 'text-amber-600 dark:text-amber-400'
+                                  : 'text-zinc-500 dark:text-zinc-400'
+                            }`}
+                          >
+                            {quota.expired
+                              ? t('subscriptions.quotaExpired')
+                              : quota.daysLeft === 0
+                                ? t('subscriptions.quotaToday')
+                                : t('dashboard.healthExpireDays', { days: quota.daysLeft })}
+                          </span>
+                        )}
+                      </div>
+                      <div className="h-1.5 rounded-full bg-zinc-200 dark:bg-white/10 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            sev.traffic === 'danger' ? 'bg-rose-500' : sev.traffic === 'warn' ? 'bg-amber-500' : 'bg-emerald-500'
+                          }`}
+                          style={{ width: `${quota.usedPercent}%` }}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-[11px] font-mono text-zinc-400">
+                      {expireText
+                        ? quota.expired
+                          ? t('subscriptions.quotaExpired')
+                          : t('dashboard.healthExpireDays', { days: quota.daysLeft })
+                        : t('subscriptions.trafficUnknown')}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Quick Distribution Panel */}
